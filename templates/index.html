@@ -103,6 +103,11 @@
             transform: translateY(0);
         }
         
+        .btn-download {
+            background: linear-gradient(135deg, #28a745 0%, #1e7e34 100%);
+            margin-top: 15px;
+        }
+        
         #result {
             display: none;
             margin-top: 30px;
@@ -214,6 +219,9 @@ Your Company Team
     </div>
 
     <script>
+        // Store the result globally so download function can access it
+        let currentResult = null;
+        
         async function createDocument() {
             const pdfId = document.getElementById('pdf_id').value;
             const clientName = document.getElementById('client_name').value;
@@ -247,6 +255,7 @@ Your Company Team
                 document.getElementById('loading').style.display = 'none';
                 
                 if (result.success) {
+                    currentResult = result; // Store the result globally
                     showSuccess(result);
                 } else {
                     showError(result.error);
@@ -275,8 +284,8 @@ Your Company Team
                     <small>${result.tracking_url}</small>
                 </div>
                 
-                <button class="btn" onclick="downloadDocument('${result.download_filename}', \`${result.html_content}\`)">
-                    Download HTML Document
+                <button class="btn btn-download" onclick="downloadDocument()">
+                    📥 Download HTML Document
                 </button>
                 
                 <hr style="margin: 25px 0; border: none; border-top: 1px solid #e1e5e9;">
@@ -303,12 +312,17 @@ Your Company Team
             resultDiv.style.display = 'block';
         }
         
-        function downloadDocument(filename, content) {
-            const blob = new Blob([content], { type: 'text/html; charset=utf-8' });
+        function downloadDocument() {
+            if (!currentResult) {
+                alert('No document to download. Please generate a document first.');
+                return;
+            }
+            
+            const blob = new Blob([currentResult.html_content], { type: 'text/html; charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = filename;
+            a.download = currentResult.download_filename;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
