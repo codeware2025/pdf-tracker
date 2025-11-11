@@ -1,10 +1,10 @@
 services:
   - type: web
-    name: pdf-tracker
+    name: pdf-tracker-debug
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn debug_app:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
