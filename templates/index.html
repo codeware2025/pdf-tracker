@@ -318,15 +318,44 @@ Your Company Team
                 return;
             }
             
-            const blob = new Blob([currentResult.html_content], { type: 'text/html; charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = currentResult.download_filename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+            try {
+                const blob = new Blob([currentResult.html_content], { type: 'text/html; charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = currentResult.download_filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                // Alternative method: Use the download endpoint
+                // fetch('/download-document', {
+                //     method: 'POST',
+                //     headers: {
+                //         'Content-Type': 'application/json',
+                //     },
+                //     body: JSON.stringify({
+                //         html_content: currentResult.html_content,
+                //         filename: currentResult.download_filename
+                //     })
+                // })
+                // .then(response => response.blob())
+                // .then(blob => {
+                //     const url = window.URL.createObjectURL(blob);
+                //     const a = document.createElement('a');
+                //     a.href = url;
+                //     a.download = currentResult.download_filename;
+                //     document.body.appendChild(a);
+                //     a.click();
+                //     a.remove();
+                //     window.URL.revokeObjectURL(url);
+                // });
+                
+            } catch (error) {
+                console.error('Download error:', error);
+                alert('Error downloading document: ' + error.message);
+            }
         }
         
         // Allow form submission with Enter key
