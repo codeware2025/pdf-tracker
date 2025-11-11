@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PDF Tracking System</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #007cba 0%, #005a87 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .form-group {
+            margin-bottom: 25px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        input, textarea {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+        
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #007cba;
+        }
+        
+        textarea {
+            min-height: 150px;
+            resize: vertical;
+            font-family: inherit;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #007cba 0%, #005a87 100%);
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            width: 100%;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        #result {
+            display: none;
+            margin-top: 30px;
+            padding: 25px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border-left: 5px solid #007cba;
+        }
+        
+        .success-message {
+            color: #28a745;
+            font-weight: 600;
+            margin-bottom: 15px;
+        }
+        
+        .info-box {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border: 1px solid #e1e5e9;
+        }
+        
+        .step {
+            margin: 15px 0;
+            padding-left: 20px;
+            border-left: 3px solid #007cba;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #007cba;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+            margin: 0 auto 15px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        @media (max-width: 600px) {
+            .content {
+                padding: 20px;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📄 PDF Tracking System</h1>
+            <p>Create trackable documents and get notifications when clients open them</p>
+        </div>
+        
+        <div class="content">
+            <div class="form-group">
+                <label for="pdf_id">Document ID:</label>
+                <input type="text" id="pdf_id" placeholder="e.g., QUOTE_001, CONTRACT_2024" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="client_name">Client Name:</label>
+                <input type="text" id="client_name" placeholder="e.g., John Doe Company" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="content">Document Content:</label>
+                <textarea id="content" placeholder="Enter your document content here..." required>
+Dear Client,
+
+Thank you for your interest in our services.
+
+This document contains important information about your quotation.
+
+PRODUCT: Premium Service Package
+PRICE: $999
+VALIDITY: 30 days
+
+We look forward to working with you.
+
+Best regards,
+Your Company Team
+                </textarea>
+            </div>
+            
+            <button class="btn" onclick="createDocument()">Generate Tracked Document</button>
+            
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Creating your tracked document...</p>
+            </div>
+            
+            <div id="result"></div>
+        </div>
+    </div>
+
+    <script>
+        async function createDocument() {
+            const pdfId = document.getElementById('pdf_id').value;
+            const clientName = document.getElementById('client_name').value;
+            const content = document.getElementById('content').value;
+            
+            if (!pdfId || !clientName || !content) {
+                alert('Please fill in all fields');
+                return;
+            }
+            
+            // Show loading
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
+            
+            try {
+                const response = await fetch('/create-document', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        pdf_id: pdfId,
+                        client_name: clientName,
+                        content: content
+                    })
+                });
+                
+                const result = await response.json();
+                
+                // Hide loading
+                document.getElementById('loading').style.display = 'none';
+                
+                if (result.success) {
+                    showSuccess(result);
+                } else {
+                    showError(result.error);
+                }
+            } catch (error) {
+                document.getElementById('loading').style.display = 'none';
+                showError('Network error: ' + error.message);
+            }
+        }
+        
+        function showSuccess(result) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = `
+                <div class="success-message">✅ Document Created Successfully!</div>
+                
+                <div class="info-box">
+                    <strong>Document ID:</strong> ${result.pdf_id}
+                </div>
+                
+                <div class="info-box">
+                    <strong>Client:</strong> ${result.client_name}
+                </div>
+                
+                <div class="info-box">
+                    <strong>Tracking URL:</strong><br>
+                    <small>${result.tracking_url}</small>
+                </div>
+                
+                <button class="btn" onclick="downloadDocument('${result.download_filename}', \`${result.html_content}\`)">
+                    Download HTML Document
+                </button>
+                
+                <hr style="margin: 25px 0; border: none; border-top: 1px solid #e1e5e9;">
+                
+                <h3>📋 How to Use:</h3>
+                <div class="step">1. Download the HTML file using the button above</div>
+                <div class="step">2. Send the HTML file to your client via email</div>
+                <div class="step">3. When client opens the file, you'll receive email/WhatsApp notifications</div>
+                <div class="step">4. Check analytics: <a href="/analytics/${result.pdf_id}" target="_blank">View Analytics for ${result.pdf_id}</a></div>
+                
+                <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 5px; border: 1px solid #ffeaa7;">
+                    <strong>💡 Tip:</strong> The downloaded HTML file looks like a professional document and includes tracking automatically.
+                </div>
+            `;
+            resultDiv.style.display = 'block';
+        }
+        
+        function showError(error) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = `
+                <div style="color: #dc3545; font-weight: 600;">❌ Error: ${error}</div>
+                <p style="margin-top: 10px;">Please check the console for more details and try again.</p>
+            `;
+            resultDiv.style.display = 'block';
+        }
+        
+        function downloadDocument(filename, content) {
+            const blob = new Blob([content], { type: 'text/html; charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+        
+        // Allow form submission with Enter key
+        document.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                createDocument();
+            }
+        });
+    </script>
+</body>
+</html>
