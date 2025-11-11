@@ -9,7 +9,6 @@ import logging
 from flask import Flask, request, Response, render_template, jsonify
 import base64
 import threading
-import time
 
 # Configure logging
 logging.basicConfig(
@@ -40,6 +39,9 @@ class PDFTracker:
                 ip_address TEXT,
                 country TEXT,
                 city TEXT,
+                region TEXT,
+                latitude REAL,
+                longitude REAL,
                 user_agent TEXT,
                 email_status TEXT,
                 whatsapp_status TEXT,
@@ -49,224 +51,391 @@ class PDFTracker:
         self.conn.commit()
         logger.info("Database initialized successfully")
     
-    def get_geo_info(self, ip_address):
-        """Get geographic information from IP address"""
+    def get_accurate_location(self, ip_address):
+        """Get accurate GPS location using multiple geolocation APIs"""
+        location_data = {
+            'ip': ip_address,
+            'country': 'Unknown',
+            'city': 'Unknown',
+            'region': 'Unknown',
+            'latitude': None,
+            'longitude': None,
+            'accuracy': 'low',
+            'service': 'none'
+        }
+        
+        # Skip local IPs
+        if ip_address in ['127.0.0.1', 'localhost'] or ip_address.startswith(('192.168.', '10.', '172.', '0.')):
+            location_data.update({
+                'country': 'Local Network',
+                'city': 'Internal',
+                'accuracy': 'local'
+            })
+            return location_data
+        
+        # Try multiple geolocation services for better accuracy
+        services = [
+            self._try_ipapi(ip_address),
+            self._try_ipinfo(ip_address),
+            self._try_geoplugin(ip_address)
+        ]
+        
+        # Use the most accurate result
+        for result in services:
+            if result and result.get('latitude') and result.get('longitude'):
+                location_data.update(result)
+                location_data['accuracy'] = 'high'
+                break
+            elif result and result.get('city') != 'Unknown':
+                location_data.update(result)
+                if not location_data['latitude'] or not location_data['longitude']:
+                    location_data['accuracy'] = 'medium'
+        
+        logger.info(f"📍 Location for {ip_address}: {location_data['city']}, {location_data['country']} "
+                   f"({location_data['latitude']}, {location_data['longitude']})")
+        
+        return location_data
+    
+    def _try_ipapi(self, ip_address):
+        """Try ipapi.co service (usually most accurate)"""
         try:
-            if ip_address in ['127.0.0.1', 'localhost'] or ip_address.startswith(('192.168.', '10.', '172.', '0.')):
-                return {'country': 'Local', 'city': 'Internal', 'ip': ip_address}
-            
-            logger.debug(f"Fetching geo info for IP: {ip_address}")
             response = requests.get(f'http://ipapi.co/{ip_address}/json/', timeout=5)
-            
             if response.status_code == 200:
                 data = response.json()
                 return {
                     'country': data.get('country_name', 'Unknown'),
                     'city': data.get('city', 'Unknown'),
-                    'ip': ip_address
+                    'region': data.get('region', 'Unknown'),
+                    'latitude': float(data.get('latitude', 0)) or None,
+                    'longitude': float(data.get('longitude', 0)) or None,
+                    'service': 'ipapi'
                 }
         except Exception as e:
-            logger.error(f"Geo location error: {str(e)}")
-        
-        return {'country': 'Unknown', 'city': 'Unknown', 'ip': ip_address}
+            logger.debug(f"ipapi.co failed: {e}")
+        return None
     
-    def send_email_notification_async(self, pdf_id, client_name, access_data):
-        """Send email notification in a separate thread to avoid timeouts"""
-        def send_email():
-            try:
-                # Get configuration from environment
-                smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-                smtp_port = int(os.getenv('SMTP_PORT', 587))
-                email_from = os.getenv('EMAIL_FROM', '')
-                email_password = os.getenv('EMAIL_PASSWORD', '')
-                email_to = os.getenv('EMAIL_TO', email_from)
+    def _try_ipinfo(self, ip_address):
+        """Try ipinfo.io service"""
+        try:
+            response = requests.get(f'https://ipinfo.io/{ip_address}/json', timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                loc = data.get('loc', '').split(',')
+                latitude = float(loc[0]) if loc and loc[0] else None
+                longitude = float(loc[1]) if len(loc) > 1 and loc[1] else None
                 
-                # Validate configuration
-                if not email_from or not email_password:
-                    logger.error("Email configuration missing")
-                    self.update_email_status(pdf_id, 'not_configured')
-                    return
-                
-                logger.info(f"📧 Starting email send for {pdf_id}")
-                
-                # Create email message
-                message = MIMEMultipart()
-                message['From'] = email_from
-                message['To'] = email_to
-                message['Subject'] = f"PDF Opened: {pdf_id} - {client_name}"
-                
-                body = f"""PDF Tracking Notification
-
-Document: {pdf_id}
-Client: {client_name}
-Opened: {access_data['access_time']}
-Location: {access_data['city']}, {access_data['country']}
-IP Address: {access_data['ip_address']}
-
-This PDF was successfully delivered and opened by the recipient."""
-                
-                message.attach(MIMEText(body, 'plain'))
-                
-                # Send email with timeout
-                logger.debug(f"Connecting to {smtp_server}:{smtp_port}")
-                server = smtplib.SMTP(smtp_server, smtp_port, timeout=10)
-                server.starttls()
-                server.login(email_from, email_password)
-                server.send_message(message)
-                server.quit()
-                
-                logger.info(f"✅ Email sent successfully for {pdf_id}")
-                self.update_email_status(pdf_id, 'sent')
-                
-            except smtplib.SMTPAuthenticationError as e:
-                logger.error(f"❌ Email authentication failed: {str(e)}")
-                self.update_email_status(pdf_id, f'auth_error: {str(e)}')
-            except smtplib.SMTPException as e:
-                logger.error(f"❌ SMTP error: {str(e)}")
-                self.update_email_status(pdf_id, f'smtp_error: {str(e)}')
-            except Exception as e:
-                logger.error(f"❌ Email sending failed: {str(e)}")
-                self.update_email_status(pdf_id, f'error: {str(e)}')
-        
-        # Start email in background thread
-        thread = threading.Thread(target=send_email)
-        thread.daemon = True
-        thread.start()
-        
-        # Return immediately to avoid timeout
-        return 'processing'
-    
-    def send_whatsapp_notification_async(self, pdf_id, client_name, access_data):
-        """Send WhatsApp notification in a separate thread"""
-        def send_whatsapp():
-            try:
-                # Get configuration from environment
-                instance_id = os.getenv('WHATSAPP_INSTANCE_ID', '')
-                token = os.getenv('WHATSAPP_TOKEN', '')
-                to_number = os.getenv('WHATSAPP_TO_NUMBER', '')
-                
-                # Validate configuration
-                if not all([instance_id, token, to_number]):
-                    logger.warning("WhatsApp configuration incomplete")
-                    self.update_whatsapp_status(pdf_id, 'not_configured')
-                    return
-                
-                logger.info(f"💬 Starting WhatsApp send for {pdf_id}")
-                
-                # Format message
-                message = f"""PDF Tracking Alert
-
-Document: {pdf_id}
-Client: {client_name}
-Opened: {access_data['access_time']}
-Location: {access_data['city']}, {access_data['country']}
-IP: {access_data['ip_address']}
-
-The document has been opened by the client."""
-                
-                # Prepare API request
-                url = f"https://api.ultramsg.com/{instance_id}/messages/chat"
-                payload = {
-                    "token": token,
-                    "to": f"+{to_number}",
-                    "body": message
+                return {
+                    'country': data.get('country', 'Unknown'),
+                    'city': data.get('city', 'Unknown'),
+                    'region': data.get('region', 'Unknown'),
+                    'latitude': latitude,
+                    'longitude': longitude,
+                    'service': 'ipinfo'
                 }
-                
-                # Send request with timeout
-                response = requests.post(url, data=payload, timeout=10)
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get('sent') == 'true':
-                        logger.info(f"✅ WhatsApp sent successfully for {pdf_id}")
-                        self.update_whatsapp_status(pdf_id, 'sent')
-                    else:
-                        logger.error(f"❌ WhatsApp API error: {result}")
-                        self.update_whatsapp_status(pdf_id, f'api_error: {result}')
-                else:
-                    logger.error(f"❌ WhatsApp HTTP error: {response.status_code}")
-                    self.update_whatsapp_status(pdf_id, f'http_error: {response.status_code}')
-                    
-            except Exception as e:
-                logger.error(f"❌ WhatsApp sending failed: {str(e)}")
-                self.update_whatsapp_status(pdf_id, f'error: {str(e)}')
-        
-        # Start WhatsApp in background thread
-        thread = threading.Thread(target=send_whatsapp)
-        thread.daemon = True
-        thread.start()
-        
-        # Return immediately to avoid timeout
-        return 'processing'
-    
-    def update_email_status(self, pdf_id, status):
-        """Update email status in database"""
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                'UPDATE pdf_access SET email_status = ? WHERE pdf_id = ? ORDER BY id DESC LIMIT 1',
-                (status, pdf_id)
-            )
-            self.conn.commit()
-            logger.debug(f"Updated email status for {pdf_id}: {status}")
         except Exception as e:
-            logger.error(f"Error updating email status: {str(e)}")
+            logger.debug(f"ipinfo.io failed: {e}")
+        return None
     
-    def update_whatsapp_status(self, pdf_id, status):
-        """Update WhatsApp status in database"""
+    def _try_geoplugin(self, ip_address):
+        """Try geoplugin.net service"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                'UPDATE pdf_access SET whatsapp_status = ? WHERE pdf_id = ? ORDER BY id DESC LIMIT 1',
-                (status, pdf_id)
-            )
-            self.conn.commit()
-            logger.debug(f"Updated WhatsApp status for {pdf_id}: {status}")
+            response = requests.get(f'http://www.geoplugin.net/json.gp?ip={ip_address}', timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    'country': data.get('geoplugin_countryName', 'Unknown'),
+                    'city': data.get('geoplugin_city', 'Unknown'),
+                    'region': data.get('geoplugin_region', 'Unknown'),
+                    'latitude': float(data.get('geoplugin_latitude', 0)) or None,
+                    'longitude': float(data.get('geoplugin_longitude', 0)) or None,
+                    'service': 'geoplugin'
+                }
         except Exception as e:
-            logger.error(f"Error updating WhatsApp status: {str(e)}")
+            logger.debug(f"geoplugin failed: {e}")
+        return None
+    
+    def send_email_notification(self, pdf_id, client_name, access_data, location_data):
+        """Send email notification with detailed GPS location"""
+        try:
+            # Get configuration from environment
+            smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+            smtp_port = int(os.getenv('SMTP_PORT', '587'))
+            email_from = os.getenv('EMAIL_FROM', '')
+            email_password = os.getenv('EMAIL_PASSWORD', '')
+            email_to = os.getenv('EMAIL_TO', email_from)
+            
+            # Validate configuration
+            if not email_from or not email_password:
+                logger.error("❌ Email configuration missing: EMAIL_FROM or EMAIL_PASSWORD")
+                return "not_configured"
+            
+            logger.info(f"📧 Preparing to send email for {pdf_id}")
+            
+            # Create email message with detailed location info
+            message = MIMEMultipart()
+            message['From'] = email_from
+            message['To'] = email_to
+            message['Subject'] = f"📍 PDF Opened: {pdf_id} - {client_name}"
+            
+            # Build location string
+            location_parts = []
+            if location_data['city'] != 'Unknown':
+                location_parts.append(location_data['city'])
+            if location_data['region'] != 'Unknown':
+                location_parts.append(location_data['region'])
+            if location_data['country'] != 'Unknown':
+                location_parts.append(location_data['country'])
+            
+            location_str = ', '.join(location_parts) if location_parts else 'Location unknown'
+            
+            # Build GPS information
+            gps_section = ""
+            maps_links = ""
+            
+            if location_data['latitude'] and location_data['longitude']:
+                lat = location_data['latitude']
+                lng = location_data['longitude']
+                
+                # Google Maps links
+                google_maps_url = f"https://www.google.com/maps?q={lat},{lng}"
+                apple_maps_url = f"https://maps.apple.com/?q={lat},{lng}"
+                openstreetmap_url = f"https://www.openstreetmap.org/?mlat={lat}&mlon={lng}"
+                
+                gps_section = f"""
+🎯 **GPS COORDINATES:**
+   📍 Latitude: {lat:.6f}
+   📍 Longitude: {lng:.6f}
 
-    def record_access(self, pdf_id, client_name, ip_address, user_agent):
-        """Record document access and send notifications (non-blocking)"""
+🗺️ **MAP LINKS:**
+   • Google Maps: {google_maps_url}
+   • Apple Maps: {apple_maps_url}
+   • OpenStreetMap: {openstreetmap_url}
+
+"""
+            
+            body = f"""🔔 PDF TRACKING NOTIFICATION
+
+📄 **Document:** {pdf_id}
+👤 **Client:** {client_name}
+🕒 **Opened:** {access_data['access_time']}
+🌐 **IP Address:** {access_data['ip_address']}
+
+📍 **LOCATION INFORMATION:**
+   🏙️ City: {location_data['city']}
+   🏞️ Region: {location_data['region']}
+   🌍 Country: {location_data['country']}
+   📊 Accuracy: {location_data['accuracy'].upper()}
+   🔧 Service: {location_data['service']}
+
+{gps_section}
+📱 **Device Information:**
+   {access_data['user_agent']}
+
+---
+📡 PDF Tracking System | Real-time Location Tracking
+"""
+            
+            message.attach(MIMEText(body, 'plain'))
+            
+            # Send email with robust error handling
+            logger.info(f"🔐 Connecting to {smtp_server}:{smtp_port}")
+            
+            # Create SMTP connection with timeout
+            server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
+            
+            # Enable debug to see SMTP conversation
+            server.set_debuglevel(0)  # Set to 1 for detailed debug
+            
+            # Start TLS encryption
+            server.starttls()
+            
+            # Login with credentials
+            logger.info(f"👤 Logging in as {email_from}")
+            server.login(email_from, email_password)
+            
+            # Send email
+            logger.info(f"📤 Sending email to {email_to}")
+            server.send_message(message)
+            
+            # Properly close connection
+            server.quit()
+            
+            logger.info(f"✅ Email sent successfully for {pdf_id}")
+            return "sent"
+            
+        except smtplib.SMTPAuthenticationError as e:
+            error_msg = f"❌ Email authentication failed: {str(e)}"
+            logger.error(error_msg)
+            return f"auth_error: {str(e)}"
+            
+        except smtplib.SMTPServerDisconnected as e:
+            error_msg = f"❌ SMTP server disconnected: {str(e)}"
+            logger.error(error_msg)
+            return f"disconnected: {str(e)}"
+            
+        except smtplib.SMTPException as e:
+            error_msg = f"❌ SMTP error: {str(e)}"
+            logger.error(error_msg)
+            return f"smtp_error: {str(e)}"
+            
+        except Exception as e:
+            error_msg = f"❌ Email sending failed: {str(e)}"
+            logger.error(error_msg)
+            return f"error: {str(e)}"
+    
+    def send_whatsapp_notification(self, pdf_id, client_name, access_data, location_data):
+        """Send WhatsApp notification with GPS location and map links"""
         try:
-            logger.info(f"Recording access for {pdf_id} - {client_name}")
+            # Get configuration from environment
+            instance_id = os.getenv('WHATSAPP_INSTANCE_ID', '')
+            token = os.getenv('WHATSAPP_TOKEN', '')
+            to_number = os.getenv('WHATSAPP_TO_NUMBER', '')
             
-            # Get location information (fast operation)
-            geo_info = self.get_geo_info(ip_address)
-            access_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Validate configuration
+            if not all([instance_id, token, to_number]):
+                logger.warning("WhatsApp configuration incomplete")
+                return "not_configured"
             
-            access_data = {
-                'access_time': access_time,
-                'ip_address': ip_address,
-                'country': geo_info['country'],
-                'city': geo_info['city'],
-                'user_agent': user_agent
+            # Build location string
+            location_parts = []
+            if location_data['city'] != 'Unknown':
+                location_parts.append(location_data['city'])
+            if location_data['region'] != 'Unknown':
+                location_parts.append(location_data['region'])
+            if location_data['country'] != 'Unknown':
+                location_parts.append(location_data['country'])
+            
+            location_str = ', '.join(location_parts) if location_parts else 'Unknown location'
+            
+            # Build GPS section for WhatsApp
+            gps_section = ""
+            if location_data['latitude'] and location_data['longitude']:
+                lat = location_data['latitude']
+                lng = location_data['longitude']
+                
+                # Shortened Google Maps link for WhatsApp
+                maps_link = f"https://maps.google.com/?q={lat},{lng}"
+                
+                gps_section = f"""
+📍 *GPS Coordinates:*
+   🎯 {lat:.6f}, {lng:.6f}
+
+🗺️ *View on Maps:*
+   {maps_link}
+
+"""
+            
+            message = f"""📍 *PDF TRACKING ALERT*
+
+📄 *Document:* {pdf_id}
+👤 *Client:* {client_name}
+🕒 *Time:* {access_data['access_time']}
+🌐 *IP:* {access_data['ip_address']}
+
+🏙️ *Location:* {location_str}
+📊 *Accuracy:* {location_data['accuracy'].upper()}
+
+{gps_section}
+Document opened with location tracking! 🎯"""
+            
+            # Prepare API request
+            url = f"https://api.ultramsg.com/{instance_id}/messages/chat"
+            payload = {
+                "token": token,
+                "to": f"+{to_number}",
+                "body": message
             }
             
-            # Save to database first (fast operation)
-            cursor = self.conn.cursor()
-            cursor.execute('''
-                INSERT INTO pdf_access 
-                (pdf_id, client_name, access_time, ip_address, country, city, user_agent, email_status, whatsapp_status, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                pdf_id, client_name, access_time, ip_address, 
-                geo_info['country'], geo_info['city'], user_agent, 
-                'pending', 'pending', 'opened'
-            ))
-            self.conn.commit()
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
             
-            # Start notifications in background (non-blocking)
-            email_status = self.send_email_notification_async(pdf_id, client_name, access_data)
-            whatsapp_status = self.send_whatsapp_notification_async(pdf_id, client_name, access_data)
+            logger.info(f"💬 Sending WhatsApp to +{to_number}")
+            response = requests.post(url, data=payload, headers=headers, timeout=15)
             
-            logger.info(f"✅ Access recorded for {pdf_id} from {geo_info['city']}, {geo_info['country']}")
-            logger.info(f"📧 Email: {email_status}, 💬 WhatsApp: {whatsapp_status}")
+            logger.debug(f"WhatsApp API response: {response.status_code}")
             
-            return True
-            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('sent') == 'true':
+                    logger.info(f"✅ WhatsApp sent successfully for {pdf_id}")
+                    return "sent"
+                else:
+                    logger.error(f"❌ WhatsApp API error: {result}")
+                    return f"api_error: {result}"
+            else:
+                logger.error(f"❌ WhatsApp HTTP error: {response.status_code}")
+                return f"http_error: {response.status_code}"
+                
         except Exception as e:
-            logger.error(f"❌ Error recording access: {str(e)}")
-            return False
+            logger.error(f"❌ WhatsApp sending failed: {str(e)}")
+            return f"error: {str(e)}"
+
+    def record_access_async(self, pdf_id, client_name, ip_address, user_agent):
+        """Record access and send notifications in background thread"""
+        def process_notifications():
+            try:
+                logger.info(f"🎯 Processing notifications for {pdf_id}")
+                
+                # Get accurate location
+                location_data = self.get_accurate_location(ip_address)
+                access_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                access_data = {
+                    'access_time': access_time,
+                    'ip_address': ip_address,
+                    'user_agent': user_agent
+                }
+                
+                # Save to database first
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    INSERT INTO pdf_access 
+                    (pdf_id, client_name, access_time, ip_address, country, city, region, latitude, longitude, user_agent, email_status, whatsapp_status, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    pdf_id, client_name, access_time, ip_address,
+                    location_data['country'], location_data['city'], location_data['region'],
+                    location_data['latitude'], location_data['longitude'], user_agent,
+                    'processing', 'processing', 'opened'
+                ))
+                self.conn.commit()
+                
+                record_id = cursor.lastrowid
+                
+                # Send email notification
+                logger.info("📧 Sending email notification...")
+                email_status = self.send_email_notification(pdf_id, client_name, access_data, location_data)
+                
+                # Send WhatsApp notification
+                logger.info("💬 Sending WhatsApp notification...")
+                whatsapp_status = self.send_whatsapp_notification(pdf_id, client_name, access_data, location_data)
+                
+                # Update status in database
+                cursor.execute('''
+                    UPDATE pdf_access 
+                    SET email_status = ?, whatsapp_status = ?
+                    WHERE id = ?
+                ''', (email_status, whatsapp_status, record_id))
+                self.conn.commit()
+                
+                logger.info(f"✅ Notifications completed for {pdf_id}")
+                logger.info(f"   📧 Email: {email_status}")
+                logger.info(f"   💬 WhatsApp: {whatsapp_status}")
+                logger.info(f"   📍 Location: {location_data['city']}, {location_data['country']}")
+                
+                if location_data['latitude'] and location_data['longitude']:
+                    logger.info(f"   🎯 GPS: {location_data['latitude']:.6f}, {location_data['longitude']:.6f}")
+                
+            except Exception as e:
+                logger.error(f"❌ Error in notification processing: {str(e)}")
+        
+        # Start processing in background thread
+        thread = threading.Thread(target=process_notifications)
+        thread.daemon = True
+        thread.start()
+        
+        return True
 
 # Initialize tracker
 tracker = PDFTracker()
@@ -277,60 +446,31 @@ def home():
 
 @app.route('/test-email', methods=['GET'])
 def test_email():
-    """Quick email test with timeout"""
+    """Test email configuration with GPS location"""
     try:
-        # Simple test that won't timeout
-        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-        smtp_port = int(os.getenv('SMTP_PORT', 587))
-        email_from = os.getenv('EMAIL_FROM', '')
+        test_ip = "8.8.8.8"  # Google DNS for testing
+        location_data = tracker.get_accurate_location(test_ip)
         
-        if not email_from:
-            return jsonify({
-                'success': False,
-                'error': 'EMAIL_FROM not configured'
-            })
-        
-        # Just test connection, don't send email
-        server = smtplib.SMTP(smtp_server, smtp_port, timeout=5)
-        server.quit()
-        
-        return jsonify({
-            'success': True,
-            'message': f'Can connect to {smtp_server}:{smtp_port}',
-            'email_from': email_from
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-@app.route('/test-email-full', methods=['GET'])
-def test_email_full():
-    """Full email test (runs in background)"""
-    try:
         test_data = {
             'pdf_id': 'TEST_EMAIL',
             'client_name': 'Test Client',
             'access_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'ip_address': '127.0.0.1',
-            'country': 'Test Country',
-            'city': 'Test City',
+            'ip_address': test_ip,
             'user_agent': 'Test User Agent'
         }
         
-        # This will run in background and not block
-        tracker.send_email_notification_async(
+        result = tracker.send_email_notification(
             test_data['pdf_id'], 
             test_data['client_name'], 
-            test_data
+            test_data,
+            location_data
         )
         
         return jsonify({
-            'success': True,
-            'message': 'Email test started in background. Check logs for results.',
-            'test_id': test_data['pdf_id']
+            'success': 'sent' in result,
+            'status': result,
+            'location': location_data,
+            'message': 'Email test with GPS location completed'
         })
         
     except Exception as e:
@@ -341,28 +481,31 @@ def test_email_full():
 
 @app.route('/test-whatsapp', methods=['GET'])
 def test_whatsapp():
-    """WhatsApp test (runs in background)"""
+    """Test WhatsApp configuration with GPS location"""
     try:
+        test_ip = "8.8.8.8"
+        location_data = tracker.get_accurate_location(test_ip)
+        
         test_data = {
             'pdf_id': 'TEST_WHATSAPP',
             'client_name': 'Test Client',
             'access_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'ip_address': '127.0.0.1',
-            'country': 'Test Country',
-            'city': 'Test City',
+            'ip_address': test_ip,
             'user_agent': 'Test User Agent'
         }
         
-        tracker.send_whatsapp_notification_async(
+        result = tracker.send_whatsapp_notification(
             test_data['pdf_id'], 
             test_data['client_name'], 
-            test_data
+            test_data,
+            location_data
         )
         
         return jsonify({
-            'success': True,
-            'message': 'WhatsApp test started in background. Check logs for results.',
-            'test_id': test_data['pdf_id']
+            'success': 'sent' in result,
+            'status': result,
+            'location': location_data,
+            'message': 'WhatsApp test with GPS location completed'
         })
         
     except Exception as e:
@@ -371,9 +514,35 @@ def test_whatsapp():
             'error': str(e)
         }), 500
 
+@app.route('/test-location/<ip>', methods=['GET'])
+def test_location(ip):
+    """Test location accuracy for an IP"""
+    try:
+        location_data = tracker.get_accurate_location(ip)
+        
+        # Generate map links if coordinates available
+        map_links = {}
+        if location_data['latitude'] and location_data['longitude']:
+            lat = location_data['latitude']
+            lng = location_data['longitude']
+            map_links = {
+                'google_maps': f"https://www.google.com/maps?q={lat},{lng}",
+                'apple_maps': f"https://maps.apple.com/?q={lat},{lng}",
+                'openstreetmap': f"https://www.openstreetmap.org/?mlat={lat}&mlon={lng}"
+            }
+        
+        return jsonify({
+            'ip': ip,
+            'location': location_data,
+            'map_links': map_links,
+            'services_used': [s for s in ['ipapi', 'ipinfo', 'geoplugin'] if location_data.get(s)]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/track-pdf/<pdf_id>/<client_name>', methods=['GET'])
 def track_pdf_access(pdf_id, client_name):
-    """Endpoint to track PDF access - FAST and NON-BLOCKING"""
+    """Endpoint to track PDF access - Fast response with background processing"""
     try:
         # Get client information
         if request.headers.get('X-Forwarded-For'):
@@ -385,19 +554,16 @@ def track_pdf_access(pdf_id, client_name):
         
         logger.info(f"📥 Tracking request: {pdf_id} - {client_name} from {ip_address}")
         
-        # Record the access (non-blocking)
-        success = tracker.record_access(pdf_id, client_name, ip_address, user_agent)
+        # Start background processing (includes GPS location)
+        tracker.record_access_async(pdf_id, client_name, ip_address, user_agent)
         
-        if success:
-            # Return a transparent 1x1 pixel immediately
-            pixel = base64.b64decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
-            response = Response(pixel, mimetype='image/gif')
-            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-            response.headers['Pragma'] = 'no-cache'
-            response.headers['Expires'] = '0'
-            return response
-        else:
-            return "Tracking Error", 500
+        # Return immediate response
+        pixel = base64.b64decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
+        response = Response(pixel, mimetype='image/gif')
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
             
     except Exception as e:
         logger.error(f"Tracking error: {str(e)}")
@@ -409,7 +575,8 @@ def get_pdf_analytics(pdf_id):
     try:
         cursor = tracker.conn.cursor()
         cursor.execute('''
-            SELECT client_name, access_time, country, city, ip_address, user_agent, email_status, whatsapp_status
+            SELECT client_name, access_time, country, city, region, latitude, longitude, 
+                   ip_address, user_agent, email_status, whatsapp_status
             FROM pdf_access 
             WHERE pdf_id = ? 
             ORDER BY access_time DESC
@@ -418,15 +585,27 @@ def get_pdf_analytics(pdf_id):
         accesses = cursor.fetchall()
         results = []
         for access in accesses:
+            # Generate map links for each access with coordinates
+            map_links = {}
+            if access[5] and access[6]:  # latitude and longitude
+                map_links = {
+                    'google_maps': f"https://www.google.com/maps?q={access[5]},{access[6]}",
+                    'apple_maps': f"https://maps.apple.com/?q={access[5]},{access[6]}"
+                }
+            
             results.append({
                 'client_name': access[0],
                 'access_time': access[1],
                 'country': access[2],
                 'city': access[3],
-                'ip_address': access[4],
-                'user_agent': access[5],
-                'email_status': access[6],
-                'whatsapp_status': access[7]
+                'region': access[4],
+                'latitude': access[5],
+                'longitude': access[6],
+                'ip_address': access[7],
+                'user_agent': access[8],
+                'email_status': access[9],
+                'whatsapp_status': access[10],
+                'map_links': map_links
             })
         
         return jsonify({
@@ -532,18 +711,19 @@ def config_status():
     return jsonify({
         'email_configured': email_configured,
         'whatsapp_configured': whatsapp_configured,
-        'email_from': 'Configured' if email_configured else 'Not set',
-        'whatsapp_to_number': 'Configured' if whatsapp_configured else 'Not set',
+        'email_from': os.getenv('EMAIL_FROM', 'Not set'),
         'smtp_server': os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
-        'smtp_port': os.getenv('SMTP_PORT', '587')
+        'smtp_port': os.getenv('SMTP_PORT', '587'),
+        'features': ['GPS Location Tracking', 'Email Notifications', 'WhatsApp Alerts']
     })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"🚀 Starting PDF Tracking System on port {port}")
-    logger.info("📧 Test endpoints:")
-    logger.info("  - /test-email - Quick connection test")
-    logger.info("  - /test-email-full - Full email test (background)")
-    logger.info("  - /test-whatsapp - WhatsApp test (background)")
+    logger.info("📍 Features: Accurate GPS Location + Multi-Platform Notifications")
+    logger.info("🔧 Test endpoints:")
+    logger.info("  - /test-email - Test email with GPS location")
+    logger.info("  - /test-whatsapp - Test WhatsApp with GPS location") 
+    logger.info("  - /test-location/8.8.8.8 - Test location accuracy")
     logger.info("  - /config-status - Check configuration")
     app.run(host='0.0.0.0', port=port, debug=False)
