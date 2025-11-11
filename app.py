@@ -8,6 +8,7 @@ from email.mime.multipart import MIMEMultipart
 import logging
 from flask import Flask, request, Response, render_template
 import base64
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -268,23 +269,31 @@ def get_pdf_analytics(pdf_id):
 def create_document():
     """Create a tracked document"""
     try:
-        data = request.json
+        data = request.get_json()
+        if not data:
+            return {'success': False, 'error': 'No JSON data received'}, 400
+            
         pdf_id = data.get('pdf_id', 'DOC_' + datetime.now().strftime("%Y%m%d_%H%M%S"))
         client_name = data.get('client_name', 'Client')
         content = data.get('content', 'Default document content')
+        
+        # Sanitize inputs for filename
+        safe_pdf_id = "".join(c for c in pdf_id if c.isalnum() or c in ('_', '-')).rstrip()
+        safe_client_name = "".join(c for c in client_name if c.isalnum() or c in ('_', '-')).rstrip()
         
         # Get base URL
         base_url = request.host_url
         if base_url.endswith('/'):
             base_url = base_url[:-1]
         
-        # Create HTML document with tracking
+        # Create HTML document with tracking - using proper formatting
         tracking_url = f"{base_url}/track-pdf/{pdf_id}/{client_name}"
         
         html_content = f"""<!DOCTYPE html>
 <html>
 <head>
     <title>Document: {pdf_id}</title>
+    <meta charset="UTF-8">
     <style>
         body {{
             font-family: Arial, sans-serif;
@@ -292,6 +301,7 @@ def create_document():
             margin: 0 auto;
             padding: 20px;
             background: white;
+            line-height: 1.6;
         }}
         .header {{
             text-align: center;
@@ -300,8 +310,8 @@ def create_document():
             margin-bottom: 20px;
         }}
         .content {{
-            line-height: 1.6;
             white-space: pre-line;
+            margin: 20px 0;
         }}
         .disclaimer {{
             background: #f5f5f5;
@@ -309,13 +319,22 @@ def create_document():
             margin: 20px 0;
             border-left: 4px solid #007cba;
             font-size: 12px;
+            border-radius: 4px;
+        }}
+        .footer {{
+            margin-top: 30px;
+            padding-top: 10px;
+            border-top: 1px solid #ccc;
+            font-size: 12px;
+            color: #666;
+            text-align: center;
         }}
     </style>
 </head>
 <body>
     <div class="header">
         <h1>COMPANY DOCUMENT</h1>
-        <p>Document ID: {pdf_id} | Client: {client_name}</p>
+        <p><strong>Document ID:</strong> {pdf_id} | <strong>Client:</strong> {client_name}</p>
     </div>
     
     <div class="disclaimer">
@@ -323,24 +342,61 @@ def create_document():
     </div>
     
     <div class="content">
-        {content}
+{content}
+    </div>
+    
+    <div class="footer">
+        <p>Generated on {datetime.now().strftime("%Y-%m-%d at %H:%M:%S")}</p>
     </div>
     
     <!-- Tracking pixel -->
-    <img src="{tracking_url}" width="1" height="1" style="display:none">
+    <img src="{tracking_url}" width="1" height="1" style="display:none" alt="tracking">
 </body>
 </html>"""
         
-        return {
+        response_data = {
             'success': True,
             'pdf_id': pdf_id,
             'client_name': client_name,
             'html_content': html_content,
             'tracking_url': tracking_url,
-            'download_filename': f"{pdf_id}_{client_name}.html"
+            'download_filename': f"{safe_pdf_id}_{safe_client_name}.html"
         }
         
+        logger.info(f"Document created: {pdf_id} for {client_name}")
+        return response_data
+        
     except Exception as e:
+        logger.error(f"Error creating document: {e}")
+        return {'success': False, 'error': str(e)}, 500
+
+@app.route('/download-document', methods=['POST'])
+def download_document():
+    """Direct download endpoint for documents"""
+    try:
+        data = request.get_json()
+        if not data:
+            return {'success': False, 'error': 'No JSON data received'}, 400
+            
+        html_content = data.get('html_content')
+        filename = data.get('filename', 'document.html')
+        
+        if not html_content:
+            return {'success': False, 'error': 'No HTML content provided'}, 400
+        
+        # Create response with HTML content for download
+        response = Response(
+            html_content,
+            mimetype='text/html',
+            headers={
+                'Content-Disposition': f'attachment; filename={filename}',
+                'Content-Type': 'text/html; charset=utf-8'
+            }
+        )
+        return response
+        
+    except Exception as e:
+        logger.error(f"Download error: {e}")
         return {'success': False, 'error': str(e)}, 500
 
 if __name__ == '__main__':
