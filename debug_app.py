@@ -8,48 +8,27 @@ from email.mime.multipart import MIMEMultipart
 import logging
 from flask import Flask, request, Response, render_template, jsonify
 import base64
+import json
 
-# Enhanced logging
+# Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('debug.log')
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-def check_environment_variables():
-    """Check if all required environment variables are set"""
-    required_vars = {
-        'EMAIL_FROM': os.getenv('EMAIL_FROM'),
-        'EMAIL_PASSWORD': os.getenv('EMAIL_PASSWORD'),
-        'EMAIL_TO': os.getenv('EMAIL_TO'),
-        'WHATSAPP_INSTANCE_ID': os.getenv('WHATSAPP_INSTANCE_ID'),
-        'WHATSAPP_TOKEN': os.getenv('WHATSAPP_TOKEN'),
-        'WHATSAPP_TO_NUMBER': os.getenv('WHATSAPP_TO_NUMBER')
-    }
-    
-    logger.info("🔍 CHECKING ENVIRONMENT VARIABLES:")
-    for key, value in required_vars.items():
-        if value:
-            logger.info(f"✅ {key}: {'*' * 8}{value[-4:]}" if len(value) > 8 else f"✅ {key}: {value}")
-        else:
-            logger.error(f"❌ {key}: NOT SET")
-    
-    return required_vars
-
-class DebugPDFTracker:
+class PDFTracker:
     def __init__(self):
-        self.env_vars = check_environment_variables()
         self.setup_database()
     
     def setup_database(self):
         """Initialize SQLite database for tracking"""
-        self.conn = sqlite3.connect('/tmp/pdf_tracking.db', check_same_thread=False)
+        self.conn = sqlite3.connect('pdf_tracking.db', check_same_thread=False)
         cursor = self.conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS pdf_access (
@@ -63,177 +42,125 @@ class DebugPDFTracker:
                 user_agent TEXT,
                 email_status TEXT,
                 whatsapp_status TEXT,
-                debug_info TEXT,
                 status TEXT DEFAULT 'delivered'
             )
         ''')
         self.conn.commit()
+        logger.info("Database initialized successfully")
     
-    def test_email_connection(self):
-        """Test email configuration with detailed debugging"""
+    def get_geo_info(self, ip_address):
+        """Get geographic information from IP address"""
         try:
-            logger.info("🧪 TESTING EMAIL CONNECTION...")
+            if ip_address in ['127.0.0.1', 'localhost'] or ip_address.startswith(('192.168.', '10.', '172.', '0.')):
+                return {'country': 'Local', 'city': 'Internal', 'ip': ip_address}
             
-            smtp_server = "smtp.gmail.com"
-            smtp_port = 587
-            email_from = self.env_vars['EMAIL_FROM']
-            email_password = self.env_vars['EMAIL_PASSWORD']
-            
-            if not email_from or not email_password:
-                logger.error("❌ Email credentials missing")
-                return False
-            
-            logger.debug(f"Connecting to {smtp_server}:{smtp_port}")
-            server = smtplib.SMTP(smtp_server, smtp_port)
-            server.set_debuglevel(1)  # Enable verbose debugging
-            
-            logger.debug("Starting TLS...")
-            server.starttls()
-            
-            logger.debug(f"Attempting login with: {email_from}")
-            server.login(email_from, email_password)
-            
-            logger.debug("Login successful, closing connection...")
-            server.quit()
-            
-            logger.info("✅ EMAIL CONNECTION TEST: SUCCESS")
-            return True
-            
-        except smtplib.SMTPAuthenticationError as e:
-            logger.error(f"❌ EMAIL AUTHENTICATION FAILED: {e}")
-            logger.error("💡 TIP: Use Gmail App Password, not your regular password")
-            return False
-        except Exception as e:
-            logger.error(f"❌ EMAIL CONNECTION FAILED: {e}")
-            return False
-    
-    def test_whatsapp_connection(self):
-        """Test WhatsApp configuration with detailed debugging"""
-        try:
-            logger.info("🧪 TESTING WHATSAPP CONNECTION...")
-            
-            instance_id = self.env_vars['WHATSAPP_INSTANCE_ID']
-            token = self.env_vars['WHATSAPP_TOKEN']
-            
-            if not instance_id or not token:
-                logger.error("❌ WhatsApp credentials missing")
-                return False
-            
-            # Test the instance status
-            url = f"https://api.ultramsg.com/{instance_id}/instance/me"
-            params = {"token": token}
-            
-            logger.debug(f"Testing WhatsApp API: {url}")
-            response = requests.get(url, params=params, timeout=10)
-            
-            logger.debug(f"API Response Status: {response.status_code}")
-            logger.debug(f"API Response: {response.text}")
+            logger.debug(f"Fetching geo info for IP: {ip_address}")
+            response = requests.get(f'http://ipapi.co/{ip_address}/json/', timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
-                if data.get('accountStatus') == 'authenticated':
-                    logger.info("✅ WHATSAPP CONNECTION TEST: SUCCESS")
-                    return True
-                else:
-                    logger.error(f"❌ WHATSAPP NOT AUTHENTICATED: {data}")
-                    return False
+                logger.debug(f"Geo API response: {data}")
+                return {
+                    'country': data.get('country_name', 'Unknown'),
+                    'city': data.get('city', 'Unknown'),
+                    'ip': ip_address
+                }
             else:
-                logger.error(f"❌ WHATSAPP API ERROR: {response.status_code} - {response.text}")
-                return False
+                logger.warning(f"Geo API returned status: {response.status_code}")
                 
         except Exception as e:
-            logger.error(f"❌ WHATSAPP CONNECTION FAILED: {e}")
-            return False
+            logger.error(f"Geo location error: {str(e)}")
+        
+        return {'country': 'Unknown', 'city': 'Unknown', 'ip': ip_address}
     
     def send_email_notification(self, pdf_id, client_name, access_data):
-        """Send email notification with enhanced error handling"""
+        """Send email notification when PDF is opened"""
         try:
-            logger.info(f"📧 ATTEMPTING TO SEND EMAIL FOR {pdf_id}")
+            # Get configuration from environment with fallbacks
+            smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+            smtp_port = int(os.getenv('SMTP_PORT', 587))
+            email_from = os.getenv('EMAIL_FROM', '')
+            email_password = os.getenv('EMAIL_PASSWORD', '')
+            email_to = os.getenv('EMAIL_TO', email_from)  # Default to sender if not specified
             
-            email_from = self.env_vars['EMAIL_FROM']
-            email_password = self.env_vars['EMAIL_PASSWORD']
-            email_to = self.env_vars['EMAIL_TO']
+            # Validate configuration
+            if not email_from or not email_password:
+                logger.error("Email configuration missing: EMAIL_FROM or EMAIL_PASSWORD not set")
+                return "not_configured"
             
-            if not all([email_from, email_password, email_to]):
-                error_msg = "Email configuration incomplete"
-                logger.error(f"❌ {error_msg}")
-                return f"config_error: {error_msg}"
+            logger.debug(f"Attempting to send email via {smtp_server}:{smtp_port}")
+            logger.debug(f"From: {email_from}, To: {email_to}")
             
-            # Create message
+            # Create email message
             message = MIMEMultipart()
             message['From'] = email_from
             message['To'] = email_to
-            message['Subject'] = f"PDF Opened: {pdf_id} - {client_name}"
+            message['Subject'] = f"📄 PDF Opened: {pdf_id} - {client_name}"
             
-            body = f"""
-            PDF Tracking Notification
-            
-            Document: {pdf_id}
-            Client: {client_name}
-            Opened: {access_data['access_time']}
-            Location: {access_data['city']}, {access_data['country']}
-            IP Address: {access_data['ip_address']}
-            
-            This PDF was successfully delivered and opened by the recipient.
-            """
+            body = f"""🔔 PDF Tracking Notification
+
+📄 Document: {pdf_id}
+👤 Client: {client_name}
+🕒 Opened: {access_data['access_time']}
+📍 Location: {access_data['city']}, {access_data['country']}
+🌐 IP Address: {access_data['ip_address']}
+🔍 User Agent: {access_data['user_agent']}
+
+This PDF was successfully delivered and opened by the recipient.
+
+---
+PDF Tracking System
+"""
             
             message.attach(MIMEText(body, 'plain'))
             
             # Send email
-            logger.debug("Connecting to SMTP server...")
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.set_debuglevel(1)  # Enable verbose output
+            server = smtplib.SMTP(smtp_server, smtp_port)
+            server.set_debuglevel(1)  # Enable verbose debug output
             
-            logger.debug("Starting TLS...")
             server.starttls()
-            
-            logger.debug("Logging in...")
             server.login(email_from, email_password)
-            
-            logger.debug("Sending email...")
             server.send_message(message)
             server.quit()
             
-            logger.info(f"✅ EMAIL SENT SUCCESSFULLY FOR {pdf_id}")
+            logger.info(f"✅ Email notification sent successfully for {pdf_id}")
             return "sent"
             
         except smtplib.SMTPAuthenticationError as e:
-            error_msg = f"SMTP Authentication failed: {e}"
-            logger.error(f"❌ {error_msg}")
-            return f"auth_error: {error_msg}"
+            logger.error(f"❌ Email authentication failed: {str(e)}")
+            return f"auth_error: {str(e)}"
         except smtplib.SMTPException as e:
-            error_msg = f"SMTP error: {e}"
-            logger.error(f"❌ {error_msg}")
-            return f"smtp_error: {error_msg}"
+            logger.error(f"❌ SMTP error: {str(e)}")
+            return f"smtp_error: {str(e)}"
         except Exception as e:
-            error_msg = f"Unexpected error: {e}"
-            logger.error(f"❌ {error_msg}")
-            return f"error: {error_msg}"
+            logger.error(f"❌ Email sending failed: {str(e)}")
+            return f"error: {str(e)}"
     
     def send_whatsapp_notification(self, pdf_id, client_name, access_data):
-        """Send WhatsApp notification with enhanced error handling"""
+        """Send WhatsApp notification via UltraMSG"""
         try:
-            logger.info(f"💬 ATTEMPTING TO SEND WHATSAPP FOR {pdf_id}")
+            # Get configuration from environment
+            instance_id = os.getenv('WHATSAPP_INSTANCE_ID', '')
+            token = os.getenv('WHATSAPP_TOKEN', '')
+            to_number = os.getenv('WHATSAPP_TO_NUMBER', '')
             
-            instance_id = self.env_vars['WHATSAPP_INSTANCE_ID']
-            token = self.env_vars['WHATSAPP_TOKEN']
-            to_number = self.env_vars['WHATSAPP_TO_NUMBER']
-            
+            # Validate configuration
             if not all([instance_id, token, to_number]):
-                error_msg = "WhatsApp configuration incomplete"
-                logger.error(f"❌ {error_msg}")
-                return f"config_error: {error_msg}"
+                logger.warning("WhatsApp configuration incomplete")
+                return "not_configured"
             
-            message = f"""PDF Tracking Alert
+            # Format message
+            message = f"""🔔 PDF Tracking Alert
 
-Document: {pdf_id}
-Client: {client_name}
-Opened: {access_data['access_time']}
-Location: {access_data['city']}, {access_data['country']}
-IP: {access_data['ip_address']}
+📄 Document: {pdf_id}
+👤 Client: {client_name}
+🕒 Opened: {access_data['access_time']}
+📍 Location: {access_data['city']}, {access_data['country']}
+🌐 IP: {access_data['ip_address']}
 
-PDF successfully delivered and opened!"""
+The document has been opened by the client."""
             
+            # Prepare API request
             url = f"https://api.ultramsg.com/{instance_id}/messages/chat"
             payload = {
                 "token": token,
@@ -241,55 +168,49 @@ PDF successfully delivered and opened!"""
                 "body": message
             }
             
-            logger.debug(f"WhatsApp API URL: {url}")
-            logger.debug(f"WhatsApp Payload: {payload}")
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
             
-            response = requests.post(url, data=payload, timeout=30)
+            logger.debug(f"Sending WhatsApp to: +{to_number}")
+            logger.debug(f"API URL: {url}")
             
-            logger.debug(f"API Response Status: {response.status_code}")
-            logger.debug(f"API Response Text: {response.text}")
+            # Send request
+            response = requests.post(
+                url, 
+                data=payload, 
+                headers=headers,
+                timeout=30
+            )
+            
+            logger.debug(f"WhatsApp API response: {response.status_code}")
+            logger.debug(f"WhatsApp API content: {response.text}")
             
             if response.status_code == 200:
-                logger.info(f"✅ WHATSAPP SENT SUCCESSFULLY FOR {pdf_id}")
-                return "sent"
+                result = response.json()
+                if result.get('sent') == 'true':
+                    logger.info(f"✅ WhatsApp notification sent successfully for {pdf_id}")
+                    return "sent"
+                else:
+                    logger.error(f"❌ WhatsApp API returned error: {result}")
+                    return f"api_error: {result}"
             else:
-                error_msg = f"API returned {response.status_code}: {response.text}"
-                logger.error(f"❌ WHATSAPP FAILED: {error_msg}")
-                return f"api_error: {error_msg}"
+                logger.error(f"❌ WhatsApp API HTTP error: {response.status_code} - {response.text}")
+                return f"http_error: {response.status_code}"
                 
         except requests.exceptions.RequestException as e:
-            error_msg = f"Request failed: {e}"
-            logger.error(f"❌ WHATSAPP REQUEST FAILED: {error_msg}")
-            return f"request_error: {error_msg}"
+            logger.error(f"❌ WhatsApp request failed: {str(e)}")
+            return f"request_error: {str(e)}"
         except Exception as e:
-            error_msg = f"Unexpected error: {e}"
-            logger.error(f"❌ WHATSAPP FAILED: {error_msg}")
-            return f"error: {error_msg}"
-    
-    def get_geo_info(self, ip_address):
-        """Get geographic information from IP address"""
-        try:
-            if ip_address.startswith(('192.168.', '10.', '172.', '127.', '0.')):
-                return {'country': 'Local', 'city': 'Internal', 'ip': ip_address}
-            
-            response = requests.get(f'http://ipapi.co/{ip_address}/json/', timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    'country': data.get('country_name', 'Unknown'),
-                    'city': data.get('city', 'Unknown'),
-                    'ip': ip_address
-                }
-        except Exception as e:
-            logger.error(f"Geo location error: {e}")
-        
-        return {'country': 'Unknown', 'city': 'Unknown', 'ip': ip_address}
+            logger.error(f"❌ WhatsApp notification failed: {str(e)}")
+            return f"error: {str(e)}"
 
     def record_access(self, pdf_id, client_name, ip_address, user_agent):
         """Record document access and send notifications"""
         try:
-            logger.info(f"🎯 RECORDING ACCESS: {pdf_id} for {client_name}")
+            logger.info(f"Recording access for {pdf_id} - {client_name}")
             
+            # Get location information
             geo_info = self.get_geo_info(ip_address)
             access_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
@@ -301,84 +222,109 @@ PDF successfully delivered and opened!"""
                 'user_agent': user_agent
             }
             
-            # Send notifications
-            logger.info("Sending notifications...")
-            email_status = self.send_email_notification(pdf_id, client_name, access_data)
-            whatsapp_status = self.send_whatsapp_notification(pdf_id, client_name, access_data)
+            logger.debug(f"Access data: {access_data}")
             
-            debug_info = f"IP: {ip_address}, Geo: {geo_info['city']}, {geo_info['country']}"
+            # Send notifications
+            logger.info("Sending email notification...")
+            email_status = self.send_email_notification(pdf_id, client_name, access_data)
+            
+            logger.info("Sending WhatsApp notification...")
+            whatsapp_status = self.send_whatsapp_notification(pdf_id, client_name, access_data)
             
             # Save to database
             cursor = self.conn.cursor()
             cursor.execute('''
                 INSERT INTO pdf_access 
-                (pdf_id, client_name, access_time, ip_address, country, city, user_agent, email_status, whatsapp_status, debug_info, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (pdf_id, client_name, access_time, ip_address, 
-                  geo_info['country'], geo_info['city'], user_agent, 
-                  email_status, whatsapp_status, debug_info, 'opened'))
+                (pdf_id, client_name, access_time, ip_address, country, city, user_agent, email_status, whatsapp_status, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                pdf_id, client_name, access_time, ip_address, 
+                geo_info['country'], geo_info['city'], user_agent, 
+                email_status, whatsapp_status, 'opened'
+            ))
             self.conn.commit()
             
-            logger.info(f"✅ ACCESS RECORDED: {pdf_id}")
-            logger.info(f"   📧 Email: {email_status}")
-            logger.info(f"   💬 WhatsApp: {whatsapp_status}")
-            logger.info(f"   📍 Location: {geo_info['city']}, {geo_info['country']}")
+            logger.info(f"✅ Successfully recorded access for {pdf_id}")
+            logger.info(f"📍 Location: {geo_info['city']}, {geo_info['country']}")
+            logger.info(f"📧 Email status: {email_status}")
+            logger.info(f"💬 WhatsApp status: {whatsapp_status}")
             
             return True
             
         except Exception as e:
-            logger.error(f"❌ ERROR RECORDING ACCESS: {e}")
+            logger.error(f"❌ Error recording access: {str(e)}")
             return False
 
 # Initialize tracker
-tracker = DebugPDFTracker()
+tracker = PDFTracker()
 
 @app.route('/')
 def home():
     return render_template('index.html')
 
-@app.route('/debug')
-def debug_info():
-    """Debug endpoint to check configuration"""
-    email_test = tracker.test_email_connection()
-    whatsapp_test = tracker.test_whatsapp_connection()
-    
-    return jsonify({
-        'environment_variables': {
-            'EMAIL_FROM_set': bool(tracker.env_vars['EMAIL_FROM']),
-            'EMAIL_PASSWORD_set': bool(tracker.env_vars['EMAIL_PASSWORD']),
-            'EMAIL_TO_set': bool(tracker.env_vars['EMAIL_TO']),
-            'WHATSAPP_INSTANCE_ID_set': bool(tracker.env_vars['WHATSAPP_INSTANCE_ID']),
-            'WHATSAPP_TOKEN_set': bool(tracker.env_vars['WHATSAPP_TOKEN']),
-            'WHATSAPP_TO_NUMBER_set': bool(tracker.env_vars['WHATSAPP_TO_NUMBER'])
-        },
-        'tests': {
-            'email_connection': email_test,
-            'whatsapp_connection': whatsapp_test
-        },
-        'server_info': {
-            'render_url': os.getenv('RENDER_EXTERNAL_URL'),
-            'python_version': os.getenv('PYTHON_VERSION')
+@app.route('/test-email', methods=['GET'])
+def test_email():
+    """Test email configuration"""
+    try:
+        test_data = {
+            'pdf_id': 'TEST_EMAIL',
+            'client_name': 'Test Client',
+            'access_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'ip_address': '127.0.0.1',
+            'country': 'Test Country',
+            'city': 'Test City',
+            'user_agent': 'Test User Agent'
         }
-    })
+        
+        result = tracker.send_email_notification(
+            test_data['pdf_id'], 
+            test_data['client_name'], 
+            test_data
+        )
+        
+        return jsonify({
+            'success': 'sent' in result,
+            'status': result,
+            'message': 'Email test completed'
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
-@app.route('/test-notifications')
-def test_notifications():
-    """Test endpoint to trigger notifications"""
-    test_ip = request.remote_addr
-    test_user_agent = request.headers.get('User-Agent', 'Test')
-    
-    success = tracker.record_access(
-        "TEST_DOC", 
-        "Test Client", 
-        test_ip, 
-        test_user_agent
-    )
-    
-    return jsonify({
-        'success': success,
-        'message': 'Test notifications triggered. Check logs for details.'
-    })
+@app.route('/test-whatsapp', methods=['GET'])
+def test_whatsapp():
+    """Test WhatsApp configuration"""
+    try:
+        test_data = {
+            'pdf_id': 'TEST_WHATSAPP',
+            'client_name': 'Test Client',
+            'access_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'ip_address': '127.0.0.1',
+            'country': 'Test Country',
+            'city': 'Test City',
+            'user_agent': 'Test User Agent'
+        }
+        
+        result = tracker.send_whatsapp_notification(
+            test_data['pdf_id'], 
+            test_data['client_name'], 
+            test_data
+        )
+        
+        return jsonify({
+            'success': 'sent' in result,
+            'status': result,
+            'message': 'WhatsApp test completed'
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/track-pdf/<pdf_id>/<client_name>', methods=['GET'])
 def track_pdf_access(pdf_id, client_name):
@@ -392,9 +338,9 @@ def track_pdf_access(pdf_id, client_name):
         
         user_agent = request.headers.get('User-Agent', 'Unknown')
         
-        logger.info(f"📄 TRACKING REQUEST: {pdf_id} - {client_name}")
-        logger.info(f"   IP: {ip_address}")
-        logger.info(f"   User Agent: {user_agent}")
+        logger.info(f"📥 Tracking request received: {pdf_id} - {client_name}")
+        logger.debug(f"IP: {ip_address}")
+        logger.debug(f"User Agent: {user_agent}")
         
         # Record the access
         success = tracker.record_access(pdf_id, client_name, ip_address, user_agent)
@@ -402,16 +348,16 @@ def track_pdf_access(pdf_id, client_name):
         if success:
             # Return a transparent 1x1 pixel
             pixel = base64.b64decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
-            return Response(pixel, mimetype='image/gif', headers={
-                'Cache-Control': 'no-cache, no-store, must-revalidate',
-                'Pragma': 'no-cache',
-                'Expires': '0'
-            })
+            response = Response(pixel, mimetype='image/gif')
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+            return response
         else:
             return "Tracking Error", 500
             
     except Exception as e:
-        logger.error(f"❌ TRACKING ERROR: {e}")
+        logger.error(f"Tracking error: {str(e)}")
         return "Server Error", 500
 
 @app.route('/analytics/<pdf_id>', methods=['GET'])
@@ -420,7 +366,7 @@ def get_pdf_analytics(pdf_id):
     try:
         cursor = tracker.conn.cursor()
         cursor.execute('''
-            SELECT client_name, access_time, country, city, ip_address, user_agent, email_status, whatsapp_status, debug_info
+            SELECT client_name, access_time, country, city, ip_address, user_agent, email_status, whatsapp_status
             FROM pdf_access 
             WHERE pdf_id = ? 
             ORDER BY access_time DESC
@@ -437,8 +383,7 @@ def get_pdf_analytics(pdf_id):
                 'ip_address': access[4],
                 'user_agent': access[5],
                 'email_status': access[6],
-                'whatsapp_status': access[7],
-                'debug_info': access[8]
+                'whatsapp_status': access[7]
             })
         
         return jsonify({
@@ -453,15 +398,16 @@ def get_pdf_analytics(pdf_id):
 def create_document():
     """Create a tracked document"""
     try:
-        data = request.json
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'error': 'No JSON data provided'}), 400
+        
         pdf_id = data.get('pdf_id', 'DOC_' + datetime.now().strftime("%Y%m%d_%H%M%S"))
         client_name = data.get('client_name', 'Client')
         content = data.get('content', 'Default document content')
         
         # Get base URL
-        base_url = request.host_url
-        if base_url.endswith('/'):
-            base_url = base_url[:-1]
+        base_url = request.host_url.rstrip('/')
         
         # Create HTML document with tracking
         tracking_url = f"{base_url}/track-pdf/{pdf_id}/{client_name}"
@@ -470,6 +416,7 @@ def create_document():
 <html>
 <head>
     <title>Document: {pdf_id}</title>
+    <meta charset="UTF-8">
     <style>
         body {{
             font-family: Arial, sans-serif;
@@ -477,6 +424,7 @@ def create_document():
             margin: 0 auto;
             padding: 20px;
             background: white;
+            line-height: 1.6;
         }}
         .header {{
             text-align: center;
@@ -485,8 +433,17 @@ def create_document():
             margin-bottom: 20px;
         }}
         .content {{
-            line-height: 1.6;
             white-space: pre-line;
+        }}
+        .disclaimer {{
+            background: #f5f5f5;
+            padding: 10px;
+            margin: 20px 0;
+            border-left: 4px solid #007cba;
+            font-size: 12px;
+        }}
+        @media print {{
+            .disclaimer {{ display: none; }}
         }}
     </style>
 </head>
@@ -496,12 +453,16 @@ def create_document():
         <p>Document ID: {pdf_id} | Client: {client_name}</p>
     </div>
     
+    <div class="disclaimer">
+        <strong>Privacy Notice:</strong> This document contains tracking to monitor delivery and engagement for business purposes.
+    </div>
+    
     <div class="content">
         {content}
     </div>
     
     <!-- Tracking pixel -->
-    <img src="{tracking_url}" width="1" height="1" style="display:none">
+    <img src="{tracking_url}" width="1" height="1" style="display:none" alt="tracking">
 </body>
 </html>"""
         
@@ -515,9 +476,31 @@ def create_document():
         })
         
     except Exception as e:
+        logger.error(f"Error creating document: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/config-status', methods=['GET'])
+def config_status():
+    """Check configuration status"""
+    email_configured = bool(os.getenv('EMAIL_FROM') and os.getenv('EMAIL_PASSWORD'))
+    whatsapp_configured = bool(
+        os.getenv('WHATSAPP_INSTANCE_ID') and 
+        os.getenv('WHATSAPP_TOKEN') and 
+        os.getenv('WHATSAPP_TO_NUMBER')
+    )
+    
+    return jsonify({
+        'email_configured': email_configured,
+        'whatsapp_configured': whatsapp_configured,
+        'email_from': os.getenv('EMAIL_FROM', 'Not set'),
+        'whatsapp_to_number': os.getenv('WHATSAPP_TO_NUMBER', 'Not set')
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🚀 Starting Debug PDF Tracker on port {port}")
+    logger.info(f"Starting PDF Tracking System on port {port}")
+    logger.info("Test endpoints:")
+    logger.info("  - /test-email - Test email configuration")
+    logger.info("  - /test-whatsapp - Test WhatsApp configuration")
+    logger.info("  - /config-status - Check current configuration")
     app.run(host='0.0.0.0', port=port, debug=False)
