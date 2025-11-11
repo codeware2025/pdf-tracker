@@ -180,7 +180,7 @@ The document has been opened by the client."""
                 url, 
                 data=payload, 
                 headers=headers,
-                timeout=30
+                timeout=60
             )
             
             logger.debug(f"WhatsApp API response: {response.status_code}")
