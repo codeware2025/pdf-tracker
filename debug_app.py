@@ -8,11 +8,12 @@ from email.mime.multipart import MIMEMultipart
 import logging
 from flask import Flask, request, Response, render_template, jsonify
 import base64
-import json
+import threading
+import time
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler()
@@ -28,7 +29,7 @@ class PDFTracker:
     
     def setup_database(self):
         """Initialize SQLite database for tracking"""
-        self.conn = sqlite3.connect('pdf_tracking.db', check_same_thread=False)
+        self.conn = sqlite3.connect('/tmp/pdf_tracking.db', check_same_thread=False)
         cursor = self.conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS pdf_access (
@@ -55,162 +56,181 @@ class PDFTracker:
                 return {'country': 'Local', 'city': 'Internal', 'ip': ip_address}
             
             logger.debug(f"Fetching geo info for IP: {ip_address}")
-            response = requests.get(f'http://ipapi.co/{ip_address}/json/', timeout=10)
+            response = requests.get(f'http://ipapi.co/{ip_address}/json/', timeout=5)
             
             if response.status_code == 200:
                 data = response.json()
-                logger.debug(f"Geo API response: {data}")
                 return {
                     'country': data.get('country_name', 'Unknown'),
                     'city': data.get('city', 'Unknown'),
                     'ip': ip_address
                 }
-            else:
-                logger.warning(f"Geo API returned status: {response.status_code}")
-                
         except Exception as e:
             logger.error(f"Geo location error: {str(e)}")
         
         return {'country': 'Unknown', 'city': 'Unknown', 'ip': ip_address}
     
-    def send_email_notification(self, pdf_id, client_name, access_data):
-        """Send email notification when PDF is opened"""
-        try:
-            # Get configuration from environment with fallbacks
-            smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-            smtp_port = int(os.getenv('SMTP_PORT', 587))
-            email_from = os.getenv('EMAIL_FROM', '')
-            email_password = os.getenv('EMAIL_PASSWORD', '')
-            email_to = os.getenv('EMAIL_TO', email_from)  # Default to sender if not specified
-            
-            # Validate configuration
-            if not email_from or not email_password:
-                logger.error("Email configuration missing: EMAIL_FROM or EMAIL_PASSWORD not set")
-                return "not_configured"
-            
-            logger.debug(f"Attempting to send email via {smtp_server}:{smtp_port}")
-            logger.debug(f"From: {email_from}, To: {email_to}")
-            
-            # Create email message
-            message = MIMEMultipart()
-            message['From'] = email_from
-            message['To'] = email_to
-            message['Subject'] = f"📄 PDF Opened: {pdf_id} - {client_name}"
-            
-            body = f"""🔔 PDF Tracking Notification
+    def send_email_notification_async(self, pdf_id, client_name, access_data):
+        """Send email notification in a separate thread to avoid timeouts"""
+        def send_email():
+            try:
+                # Get configuration from environment
+                smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+                smtp_port = int(os.getenv('SMTP_PORT', 587))
+                email_from = os.getenv('EMAIL_FROM', '')
+                email_password = os.getenv('EMAIL_PASSWORD', '')
+                email_to = os.getenv('EMAIL_TO', email_from)
+                
+                # Validate configuration
+                if not email_from or not email_password:
+                    logger.error("Email configuration missing")
+                    self.update_email_status(pdf_id, 'not_configured')
+                    return
+                
+                logger.info(f"📧 Starting email send for {pdf_id}")
+                
+                # Create email message
+                message = MIMEMultipart()
+                message['From'] = email_from
+                message['To'] = email_to
+                message['Subject'] = f"PDF Opened: {pdf_id} - {client_name}"
+                
+                body = f"""PDF Tracking Notification
 
-📄 Document: {pdf_id}
-👤 Client: {client_name}
-🕒 Opened: {access_data['access_time']}
-📍 Location: {access_data['city']}, {access_data['country']}
-🌐 IP Address: {access_data['ip_address']}
-🔍 User Agent: {access_data['user_agent']}
+Document: {pdf_id}
+Client: {client_name}
+Opened: {access_data['access_time']}
+Location: {access_data['city']}, {access_data['country']}
+IP Address: {access_data['ip_address']}
 
-This PDF was successfully delivered and opened by the recipient.
-
----
-PDF Tracking System
-"""
-            
-            message.attach(MIMEText(body, 'plain'))
-            
-            # Send email
-            server = smtplib.SMTP(smtp_server, smtp_port)
-            server.set_debuglevel(1)  # Enable verbose debug output
-            
-            server.starttls()
-            server.login(email_from, email_password)
-            server.send_message(message)
-            server.quit()
-            
-            logger.info(f"✅ Email notification sent successfully for {pdf_id}")
-            return "sent"
-            
-        except smtplib.SMTPAuthenticationError as e:
-            logger.error(f"❌ Email authentication failed: {str(e)}")
-            return f"auth_error: {str(e)}"
-        except smtplib.SMTPException as e:
-            logger.error(f"❌ SMTP error: {str(e)}")
-            return f"smtp_error: {str(e)}"
-        except Exception as e:
-            logger.error(f"❌ Email sending failed: {str(e)}")
-            return f"error: {str(e)}"
+This PDF was successfully delivered and opened by the recipient."""
+                
+                message.attach(MIMEText(body, 'plain'))
+                
+                # Send email with timeout
+                logger.debug(f"Connecting to {smtp_server}:{smtp_port}")
+                server = smtplib.SMTP(smtp_server, smtp_port, timeout=10)
+                server.starttls()
+                server.login(email_from, email_password)
+                server.send_message(message)
+                server.quit()
+                
+                logger.info(f"✅ Email sent successfully for {pdf_id}")
+                self.update_email_status(pdf_id, 'sent')
+                
+            except smtplib.SMTPAuthenticationError as e:
+                logger.error(f"❌ Email authentication failed: {str(e)}")
+                self.update_email_status(pdf_id, f'auth_error: {str(e)}')
+            except smtplib.SMTPException as e:
+                logger.error(f"❌ SMTP error: {str(e)}")
+                self.update_email_status(pdf_id, f'smtp_error: {str(e)}')
+            except Exception as e:
+                logger.error(f"❌ Email sending failed: {str(e)}")
+                self.update_email_status(pdf_id, f'error: {str(e)}')
+        
+        # Start email in background thread
+        thread = threading.Thread(target=send_email)
+        thread.daemon = True
+        thread.start()
+        
+        # Return immediately to avoid timeout
+        return 'processing'
     
-    def send_whatsapp_notification(self, pdf_id, client_name, access_data):
-        """Send WhatsApp notification via UltraMSG"""
-        try:
-            # Get configuration from environment
-            instance_id = os.getenv('WHATSAPP_INSTANCE_ID', '')
-            token = os.getenv('WHATSAPP_TOKEN', '')
-            to_number = os.getenv('WHATSAPP_TO_NUMBER', '')
-            
-            # Validate configuration
-            if not all([instance_id, token, to_number]):
-                logger.warning("WhatsApp configuration incomplete")
-                return "not_configured"
-            
-            # Format message
-            message = f"""🔔 PDF Tracking Alert
+    def send_whatsapp_notification_async(self, pdf_id, client_name, access_data):
+        """Send WhatsApp notification in a separate thread"""
+        def send_whatsapp():
+            try:
+                # Get configuration from environment
+                instance_id = os.getenv('WHATSAPP_INSTANCE_ID', '')
+                token = os.getenv('WHATSAPP_TOKEN', '')
+                to_number = os.getenv('WHATSAPP_TO_NUMBER', '')
+                
+                # Validate configuration
+                if not all([instance_id, token, to_number]):
+                    logger.warning("WhatsApp configuration incomplete")
+                    self.update_whatsapp_status(pdf_id, 'not_configured')
+                    return
+                
+                logger.info(f"💬 Starting WhatsApp send for {pdf_id}")
+                
+                # Format message
+                message = f"""PDF Tracking Alert
 
-📄 Document: {pdf_id}
-👤 Client: {client_name}
-🕒 Opened: {access_data['access_time']}
-📍 Location: {access_data['city']}, {access_data['country']}
-🌐 IP: {access_data['ip_address']}
+Document: {pdf_id}
+Client: {client_name}
+Opened: {access_data['access_time']}
+Location: {access_data['city']}, {access_data['country']}
+IP: {access_data['ip_address']}
 
 The document has been opened by the client."""
-            
-            # Prepare API request
-            url = f"https://api.ultramsg.com/{instance_id}/messages/chat"
-            payload = {
-                "token": token,
-                "to": f"+{to_number}",
-                "body": message
-            }
-            
-            headers = {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            }
-            
-            logger.debug(f"Sending WhatsApp to: +{to_number}")
-            logger.debug(f"API URL: {url}")
-            
-            # Send request
-            response = requests.post(
-                url, 
-                data=payload, 
-                headers=headers,
-                timeout=60
-            )
-            
-            logger.debug(f"WhatsApp API response: {response.status_code}")
-            logger.debug(f"WhatsApp API content: {response.text}")
-            
-            if response.status_code == 200:
-                result = response.json()
-                if result.get('sent') == 'true':
-                    logger.info(f"✅ WhatsApp notification sent successfully for {pdf_id}")
-                    return "sent"
-                else:
-                    logger.error(f"❌ WhatsApp API returned error: {result}")
-                    return f"api_error: {result}"
-            else:
-                logger.error(f"❌ WhatsApp API HTTP error: {response.status_code} - {response.text}")
-                return f"http_error: {response.status_code}"
                 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"❌ WhatsApp request failed: {str(e)}")
-            return f"request_error: {str(e)}"
+                # Prepare API request
+                url = f"https://api.ultramsg.com/{instance_id}/messages/chat"
+                payload = {
+                    "token": token,
+                    "to": f"+{to_number}",
+                    "body": message
+                }
+                
+                # Send request with timeout
+                response = requests.post(url, data=payload, timeout=10)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('sent') == 'true':
+                        logger.info(f"✅ WhatsApp sent successfully for {pdf_id}")
+                        self.update_whatsapp_status(pdf_id, 'sent')
+                    else:
+                        logger.error(f"❌ WhatsApp API error: {result}")
+                        self.update_whatsapp_status(pdf_id, f'api_error: {result}')
+                else:
+                    logger.error(f"❌ WhatsApp HTTP error: {response.status_code}")
+                    self.update_whatsapp_status(pdf_id, f'http_error: {response.status_code}')
+                    
+            except Exception as e:
+                logger.error(f"❌ WhatsApp sending failed: {str(e)}")
+                self.update_whatsapp_status(pdf_id, f'error: {str(e)}')
+        
+        # Start WhatsApp in background thread
+        thread = threading.Thread(target=send_whatsapp)
+        thread.daemon = True
+        thread.start()
+        
+        # Return immediately to avoid timeout
+        return 'processing'
+    
+    def update_email_status(self, pdf_id, status):
+        """Update email status in database"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                'UPDATE pdf_access SET email_status = ? WHERE pdf_id = ? ORDER BY id DESC LIMIT 1',
+                (status, pdf_id)
+            )
+            self.conn.commit()
+            logger.debug(f"Updated email status for {pdf_id}: {status}")
         except Exception as e:
-            logger.error(f"❌ WhatsApp notification failed: {str(e)}")
-            return f"error: {str(e)}"
+            logger.error(f"Error updating email status: {str(e)}")
+    
+    def update_whatsapp_status(self, pdf_id, status):
+        """Update WhatsApp status in database"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                'UPDATE pdf_access SET whatsapp_status = ? WHERE pdf_id = ? ORDER BY id DESC LIMIT 1',
+                (status, pdf_id)
+            )
+            self.conn.commit()
+            logger.debug(f"Updated WhatsApp status for {pdf_id}: {status}")
+        except Exception as e:
+            logger.error(f"Error updating WhatsApp status: {str(e)}")
 
     def record_access(self, pdf_id, client_name, ip_address, user_agent):
-        """Record document access and send notifications"""
+        """Record document access and send notifications (non-blocking)"""
         try:
             logger.info(f"Recording access for {pdf_id} - {client_name}")
             
-            # Get location information
+            # Get location information (fast operation)
             geo_info = self.get_geo_info(ip_address)
             access_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
@@ -222,16 +242,7 @@ The document has been opened by the client."""
                 'user_agent': user_agent
             }
             
-            logger.debug(f"Access data: {access_data}")
-            
-            # Send notifications
-            logger.info("Sending email notification...")
-            email_status = self.send_email_notification(pdf_id, client_name, access_data)
-            
-            logger.info("Sending WhatsApp notification...")
-            whatsapp_status = self.send_whatsapp_notification(pdf_id, client_name, access_data)
-            
-            # Save to database
+            # Save to database first (fast operation)
             cursor = self.conn.cursor()
             cursor.execute('''
                 INSERT INTO pdf_access 
@@ -240,14 +251,16 @@ The document has been opened by the client."""
             ''', (
                 pdf_id, client_name, access_time, ip_address, 
                 geo_info['country'], geo_info['city'], user_agent, 
-                email_status, whatsapp_status, 'opened'
+                'pending', 'pending', 'opened'
             ))
             self.conn.commit()
             
-            logger.info(f"✅ Successfully recorded access for {pdf_id}")
-            logger.info(f"📍 Location: {geo_info['city']}, {geo_info['country']}")
-            logger.info(f"📧 Email status: {email_status}")
-            logger.info(f"💬 WhatsApp status: {whatsapp_status}")
+            # Start notifications in background (non-blocking)
+            email_status = self.send_email_notification_async(pdf_id, client_name, access_data)
+            whatsapp_status = self.send_whatsapp_notification_async(pdf_id, client_name, access_data)
+            
+            logger.info(f"✅ Access recorded for {pdf_id} from {geo_info['city']}, {geo_info['country']}")
+            logger.info(f"📧 Email: {email_status}, 💬 WhatsApp: {whatsapp_status}")
             
             return True
             
@@ -264,7 +277,38 @@ def home():
 
 @app.route('/test-email', methods=['GET'])
 def test_email():
-    """Test email configuration"""
+    """Quick email test with timeout"""
+    try:
+        # Simple test that won't timeout
+        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+        smtp_port = int(os.getenv('SMTP_PORT', 587))
+        email_from = os.getenv('EMAIL_FROM', '')
+        
+        if not email_from:
+            return jsonify({
+                'success': False,
+                'error': 'EMAIL_FROM not configured'
+            })
+        
+        # Just test connection, don't send email
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=5)
+        server.quit()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Can connect to {smtp_server}:{smtp_port}',
+            'email_from': email_from
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/test-email-full', methods=['GET'])
+def test_email_full():
+    """Full email test (runs in background)"""
     try:
         test_data = {
             'pdf_id': 'TEST_EMAIL',
@@ -276,16 +320,17 @@ def test_email():
             'user_agent': 'Test User Agent'
         }
         
-        result = tracker.send_email_notification(
+        # This will run in background and not block
+        tracker.send_email_notification_async(
             test_data['pdf_id'], 
             test_data['client_name'], 
             test_data
         )
         
         return jsonify({
-            'success': 'sent' in result,
-            'status': result,
-            'message': 'Email test completed'
+            'success': True,
+            'message': 'Email test started in background. Check logs for results.',
+            'test_id': test_data['pdf_id']
         })
         
     except Exception as e:
@@ -296,7 +341,7 @@ def test_email():
 
 @app.route('/test-whatsapp', methods=['GET'])
 def test_whatsapp():
-    """Test WhatsApp configuration"""
+    """WhatsApp test (runs in background)"""
     try:
         test_data = {
             'pdf_id': 'TEST_WHATSAPP',
@@ -308,16 +353,16 @@ def test_whatsapp():
             'user_agent': 'Test User Agent'
         }
         
-        result = tracker.send_whatsapp_notification(
+        tracker.send_whatsapp_notification_async(
             test_data['pdf_id'], 
             test_data['client_name'], 
             test_data
         )
         
         return jsonify({
-            'success': 'sent' in result,
-            'status': result,
-            'message': 'WhatsApp test completed'
+            'success': True,
+            'message': 'WhatsApp test started in background. Check logs for results.',
+            'test_id': test_data['pdf_id']
         })
         
     except Exception as e:
@@ -328,7 +373,7 @@ def test_whatsapp():
 
 @app.route('/track-pdf/<pdf_id>/<client_name>', methods=['GET'])
 def track_pdf_access(pdf_id, client_name):
-    """Endpoint to track PDF access"""
+    """Endpoint to track PDF access - FAST and NON-BLOCKING"""
     try:
         # Get client information
         if request.headers.get('X-Forwarded-For'):
@@ -338,15 +383,13 @@ def track_pdf_access(pdf_id, client_name):
         
         user_agent = request.headers.get('User-Agent', 'Unknown')
         
-        logger.info(f"📥 Tracking request received: {pdf_id} - {client_name}")
-        logger.debug(f"IP: {ip_address}")
-        logger.debug(f"User Agent: {user_agent}")
+        logger.info(f"📥 Tracking request: {pdf_id} - {client_name} from {ip_address}")
         
-        # Record the access
+        # Record the access (non-blocking)
         success = tracker.record_access(pdf_id, client_name, ip_address, user_agent)
         
         if success:
-            # Return a transparent 1x1 pixel
+            # Return a transparent 1x1 pixel immediately
             pixel = base64.b64decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
             response = Response(pixel, mimetype='image/gif')
             response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
@@ -442,9 +485,6 @@ def create_document():
             border-left: 4px solid #007cba;
             font-size: 12px;
         }}
-        @media print {{
-            .disclaimer {{ display: none; }}
-        }}
     </style>
 </head>
 <body>
@@ -454,7 +494,7 @@ def create_document():
     </div>
     
     <div class="disclaimer">
-        <strong>Privacy Notice:</strong> This document contains tracking to monitor delivery and engagement for business purposes.
+        <strong>Privacy Notice:</strong> This document contains tracking to monitor delivery and engagement.
     </div>
     
     <div class="content">
@@ -462,7 +502,7 @@ def create_document():
     </div>
     
     <!-- Tracking pixel -->
-    <img src="{tracking_url}" width="1" height="1" style="display:none" alt="tracking">
+    <img src="{tracking_url}" width="1" height="1" style="display:none">
 </body>
 </html>"""
         
@@ -492,15 +532,18 @@ def config_status():
     return jsonify({
         'email_configured': email_configured,
         'whatsapp_configured': whatsapp_configured,
-        'email_from': os.getenv('EMAIL_FROM', 'Not set'),
-        'whatsapp_to_number': os.getenv('WHATSAPP_TO_NUMBER', 'Not set')
+        'email_from': 'Configured' if email_configured else 'Not set',
+        'whatsapp_to_number': 'Configured' if whatsapp_configured else 'Not set',
+        'smtp_server': os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
+        'smtp_port': os.getenv('SMTP_PORT', '587')
     })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"Starting PDF Tracking System on port {port}")
-    logger.info("Test endpoints:")
-    logger.info("  - /test-email - Test email configuration")
-    logger.info("  - /test-whatsapp - Test WhatsApp configuration")
-    logger.info("  - /config-status - Check current configuration")
+    logger.info(f"🚀 Starting PDF Tracking System on port {port}")
+    logger.info("📧 Test endpoints:")
+    logger.info("  - /test-email - Quick connection test")
+    logger.info("  - /test-email-full - Full email test (background)")
+    logger.info("  - /test-whatsapp - WhatsApp test (background)")
+    logger.info("  - /config-status - Check configuration")
     app.run(host='0.0.0.0', port=port, debug=False)
