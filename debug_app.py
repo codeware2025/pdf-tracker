@@ -2,7 +2,7 @@ import os
 import requests
 import sqlite3
 from datetime import datetime
-import smtplib, 
+import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
