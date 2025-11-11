@@ -9,6 +9,7 @@ import logging
 from flask import Flask, request, Response, render_template, jsonify
 import base64
 import threading
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -153,31 +154,20 @@ class PDFTracker:
         except Exception as e:
             logger.debug(f"geoplugin failed: {e}")
         return None
-    
-    def send_email_notification(self, pdf_id, client_name, access_data, location_data):
-        """Send email notification with detailed GPS location"""
+
+    def send_email_via_smtp(self, pdf_id, client_name, access_data, location_data):
+        """Try SMTP method for email sending"""
         try:
-            # Get configuration from environment
             smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
             smtp_port = int(os.getenv('SMTP_PORT', '587'))
             email_from = os.getenv('EMAIL_FROM', '')
             email_password = os.getenv('EMAIL_PASSWORD', '')
             email_to = os.getenv('EMAIL_TO', email_from)
             
-            # Validate configuration
             if not email_from or not email_password:
-                logger.error("❌ Email configuration missing: EMAIL_FROM or EMAIL_PASSWORD")
                 return "not_configured"
             
-            logger.info(f"📧 Preparing to send email for {pdf_id}")
-            
-            # Create email message with detailed location info
-            message = MIMEMultipart()
-            message['From'] = email_from
-            message['To'] = email_to
-            message['Subject'] = f"📍 PDF Opened: {pdf_id} - {client_name}"
-            
-            # Build location string
+            # Build email content
             location_parts = []
             if location_data['city'] != 'Unknown':
                 location_parts.append(location_data['city'])
@@ -188,110 +178,208 @@ class PDFTracker:
             
             location_str = ', '.join(location_parts) if location_parts else 'Location unknown'
             
-            # Build GPS information
             gps_section = ""
-            maps_links = ""
-            
             if location_data['latitude'] and location_data['longitude']:
                 lat = location_data['latitude']
                 lng = location_data['longitude']
-                
-                # Google Maps links
                 google_maps_url = f"https://www.google.com/maps?q={lat},{lng}"
-                apple_maps_url = f"https://maps.apple.com/?q={lat},{lng}"
-                openstreetmap_url = f"https://www.openstreetmap.org/?mlat={lat}&mlon={lng}"
                 
                 gps_section = f"""
-🎯 **GPS COORDINATES:**
+🎯 GPS COORDINATES:
    📍 Latitude: {lat:.6f}
    📍 Longitude: {lng:.6f}
 
-🗺️ **MAP LINKS:**
-   • Google Maps: {google_maps_url}
-   • Apple Maps: {apple_maps_url}
-   • OpenStreetMap: {openstreetmap_url}
+🗺️ Google Maps: {google_maps_url}
 
 """
             
             body = f"""🔔 PDF TRACKING NOTIFICATION
 
-📄 **Document:** {pdf_id}
-👤 **Client:** {client_name}
-🕒 **Opened:** {access_data['access_time']}
-🌐 **IP Address:** {access_data['ip_address']}
+📄 Document: {pdf_id}
+👤 Client: {client_name}
+🕒 Opened: {access_data['access_time']}
+🌐 IP Address: {access_data['ip_address']}
 
-📍 **LOCATION INFORMATION:**
+📍 LOCATION:
    🏙️ City: {location_data['city']}
    🏞️ Region: {location_data['region']}
    🌍 Country: {location_data['country']}
    📊 Accuracy: {location_data['accuracy'].upper()}
-   🔧 Service: {location_data['service']}
 
 {gps_section}
-📱 **Device Information:**
-   {access_data['user_agent']}
+📱 Device: {access_data['user_agent']}
 
 ---
-📡 PDF Tracking System | Real-time Location Tracking
-"""
+PDF Tracking System"""
             
+            message = MIMEMultipart()
+            message['From'] = email_from
+            message['To'] = email_to
+            message['Subject'] = f"📍 PDF Opened: {pdf_id} - {client_name}"
             message.attach(MIMEText(body, 'plain'))
             
-            # Send email with robust error handling
-            logger.info(f"🔐 Connecting to {smtp_server}:{smtp_port}")
-            
-            # Create SMTP connection with timeout
-            server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
-            
-            # Enable debug to see SMTP conversation
-            server.set_debuglevel(0)  # Set to 1 for detailed debug
-            
-            # Start TLS encryption
+            # Try SMTP with shorter timeout
+            server = smtplib.SMTP(smtp_server, smtp_port, timeout=10)
             server.starttls()
-            
-            # Login with credentials
-            logger.info(f"👤 Logging in as {email_from}")
             server.login(email_from, email_password)
-            
-            # Send email
-            logger.info(f"📤 Sending email to {email_to}")
             server.send_message(message)
-            
-            # Properly close connection
             server.quit()
             
-            logger.info(f"✅ Email sent successfully for {pdf_id}")
-            return "sent"
-            
-        except smtplib.SMTPAuthenticationError as e:
-            error_msg = f"❌ Email authentication failed: {str(e)}"
-            logger.error(error_msg)
-            return f"auth_error: {str(e)}"
-            
-        except smtplib.SMTPServerDisconnected as e:
-            error_msg = f"❌ SMTP server disconnected: {str(e)}"
-            logger.error(error_msg)
-            return f"disconnected: {str(e)}"
-            
-        except smtplib.SMTPException as e:
-            error_msg = f"❌ SMTP error: {str(e)}"
-            logger.error(error_msg)
-            return f"smtp_error: {str(e)}"
+            logger.info(f"✅ Email sent via SMTP for {pdf_id}")
+            return "sent_via_smtp"
             
         except Exception as e:
-            error_msg = f"❌ Email sending failed: {str(e)}"
-            logger.error(error_msg)
-            return f"error: {str(e)}"
+            logger.warning(f"SMTP failed: {e}")
+            return None
+
+    def send_email_via_resend(self, pdf_id, client_name, access_data, location_data):
+        """Try Resend.com API for email sending"""
+        try:
+            resend_api_key = os.getenv('RESEND_API_KEY')
+            if not resend_api_key:
+                return None
+            
+            email_from = os.getenv('EMAIL_FROM', '')
+            email_to = os.getenv('EMAIL_TO', email_from)
+            
+            # Build email content
+            location_parts = []
+            if location_data['city'] != 'Unknown':
+                location_parts.append(location_data['city'])
+            if location_data['region'] != 'Unknown':
+                location_parts.append(location_data['region'])
+            if location_data['country'] != 'Unknown':
+                location_parts.append(location_data['country'])
+            
+            location_str = ', '.join(location_parts) if location_parts else 'Location unknown'
+            
+            gps_section = ""
+            if location_data['latitude'] and location_data['longitude']:
+                lat = location_data['latitude']
+                lng = location_data['longitude']
+                google_maps_url = f"https://www.google.com/maps?q={lat},{lng}"
+                
+                gps_section = f"""
+🎯 GPS COORDINATES:
+   📍 Latitude: {lat:.6f}
+   📍 Longitude: {lng:.6f}
+
+🗺️ Google Maps: {google_maps_url}
+
+"""
+            
+            body = f"""🔔 PDF TRACKING NOTIFICATION
+
+📄 Document: {pdf_id}
+👤 Client: {client_name}
+🕒 Opened: {access_data['access_time']}
+🌐 IP Address: {access_data['ip_address']}
+
+📍 LOCATION:
+   🏙️ City: {location_data['city']}
+   🏞️ Region: {location_data['region']}
+   🌍 Country: {location_data['country']}
+   📊 Accuracy: {location_data['accuracy'].upper()}
+
+{gps_section}
+📱 Device: {access_data['user_agent']}
+
+---
+PDF Tracking System"""
+            
+            # Send via Resend API
+            url = "https://api.resend.com/emails"
+            headers = {
+                "Authorization": f"Bearer {resend_api_key}",
+                "Content-Type": "application/json"
+            }
+            data = {
+                "from": f"PDF Tracker <{email_from}>",
+                "to": [email_to],
+                "subject": f"📍 PDF Opened: {pdf_id} - {client_name}",
+                "text": body
+            }
+            
+            response = requests.post(url, json=data, headers=headers, timeout=10)
+            if response.status_code == 200:
+                logger.info(f"✅ Email sent via Resend API for {pdf_id}")
+                return "sent_via_resend"
+            else:
+                logger.warning(f"Resend API failed: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"Resend API failed: {e}")
+            return None
+
+    def send_email_via_webhook(self, pdf_id, client_name, access_data, location_data):
+        """Try webhook service for email sending"""
+        try:
+            webhook_url = os.getenv('EMAIL_WEBHOOK_URL')
+            if not webhook_url:
+                return None
+            
+            # Build the payload
+            payload = {
+                'pdf_id': pdf_id,
+                'client_name': client_name,
+                'access_time': access_data['access_time'],
+                'ip_address': access_data['ip_address'],
+                'location': {
+                    'city': location_data['city'],
+                    'region': location_data['region'],
+                    'country': location_data['country'],
+                    'latitude': location_data['latitude'],
+                    'longitude': location_data['longitude'],
+                    'accuracy': location_data['accuracy']
+                },
+                'user_agent': access_data['user_agent']
+            }
+            
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            if response.status_code == 200:
+                logger.info(f"✅ Notification sent via webhook for {pdf_id}")
+                return "sent_via_webhook"
+            else:
+                logger.warning(f"Webhook failed: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"Webhook failed: {e}")
+            return None
+
+    def send_email_notification(self, pdf_id, client_name, access_data, location_data):
+        """Send email using multiple fallback methods"""
+        logger.info(f"📧 Attempting to send email for {pdf_id}")
+        
+        # Try methods in order of preference
+        methods = [
+            self.send_email_via_smtp,
+            self.send_email_via_resend,
+            self.send_email_via_webhook
+        ]
+        
+        for method in methods:
+            try:
+                result = method(pdf_id, client_name, access_data, location_data)
+                if result and 'sent' in result:
+                    return result
+            except Exception as e:
+                logger.warning(f"Email method {method.__name__} failed: {e}")
+                continue
+        
+        # If all methods fail
+        error_msg = "All email methods failed - Network may be blocked"
+        logger.error(f"❌ {error_msg}")
+        return f"error: {error_msg}"
     
     def send_whatsapp_notification(self, pdf_id, client_name, access_data, location_data):
-        """Send WhatsApp notification with GPS location and map links"""
+        """Send WhatsApp notification with GPS location"""
         try:
-            # Get configuration from environment
             instance_id = os.getenv('WHATSAPP_INSTANCE_ID', '')
             token = os.getenv('WHATSAPP_TOKEN', '')
             to_number = os.getenv('WHATSAPP_TO_NUMBER', '')
             
-            # Validate configuration
             if not all([instance_id, token, to_number]):
                 logger.warning("WhatsApp configuration incomplete")
                 return "not_configured"
@@ -307,13 +395,11 @@ class PDFTracker:
             
             location_str = ', '.join(location_parts) if location_parts else 'Unknown location'
             
-            # Build GPS section for WhatsApp
+            # Build GPS section
             gps_section = ""
             if location_data['latitude'] and location_data['longitude']:
                 lat = location_data['latitude']
                 lng = location_data['longitude']
-                
-                # Shortened Google Maps link for WhatsApp
                 maps_link = f"https://maps.google.com/?q={lat},{lng}"
                 
                 gps_section = f"""
@@ -338,7 +424,6 @@ class PDFTracker:
 {gps_section}
 Document opened with location tracking! 🎯"""
             
-            # Prepare API request
             url = f"https://api.ultramsg.com/{instance_id}/messages/chat"
             payload = {
                 "token": token,
@@ -352,8 +437,6 @@ Document opened with location tracking! 🎯"""
             
             logger.info(f"💬 Sending WhatsApp to +{to_number}")
             response = requests.post(url, data=payload, headers=headers, timeout=15)
-            
-            logger.debug(f"WhatsApp API response: {response.status_code}")
             
             if response.status_code == 200:
                 result = response.json()
@@ -403,12 +486,8 @@ Document opened with location tracking! 🎯"""
                 
                 record_id = cursor.lastrowid
                 
-                # Send email notification
-                logger.info("📧 Sending email notification...")
+                # Send notifications
                 email_status = self.send_email_notification(pdf_id, client_name, access_data, location_data)
-                
-                # Send WhatsApp notification
-                logger.info("💬 Sending WhatsApp notification...")
                 whatsapp_status = self.send_whatsapp_notification(pdf_id, client_name, access_data, location_data)
                 
                 # Update status in database
@@ -422,10 +501,6 @@ Document opened with location tracking! 🎯"""
                 logger.info(f"✅ Notifications completed for {pdf_id}")
                 logger.info(f"   📧 Email: {email_status}")
                 logger.info(f"   💬 WhatsApp: {whatsapp_status}")
-                logger.info(f"   📍 Location: {location_data['city']}, {location_data['country']}")
-                
-                if location_data['latitude'] and location_data['longitude']:
-                    logger.info(f"   🎯 GPS: {location_data['latitude']:.6f}, {location_data['longitude']:.6f}")
                 
             except Exception as e:
                 logger.error(f"❌ Error in notification processing: {str(e)}")
@@ -446,9 +521,9 @@ def home():
 
 @app.route('/test-email', methods=['GET'])
 def test_email():
-    """Test email configuration with GPS location"""
+    """Test email configuration"""
     try:
-        test_ip = "8.8.8.8"  # Google DNS for testing
+        test_ip = "8.8.8.8"
         location_data = tracker.get_accurate_location(test_ip)
         
         test_data = {
@@ -470,7 +545,7 @@ def test_email():
             'success': 'sent' in result,
             'status': result,
             'location': location_data,
-            'message': 'Email test with GPS location completed'
+            'message': 'Email test completed'
         })
         
     except Exception as e:
@@ -479,9 +554,43 @@ def test_email():
             'error': str(e)
         }), 500
 
+@app.route('/test-smtp', methods=['GET'])
+def test_smtp():
+    """Test SMTP connection specifically"""
+    try:
+        import socket
+        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+        smtp_port = int(os.getenv('SMTP_PORT', '587'))
+        
+        # Test network connectivity first
+        logger.info(f"Testing connection to {smtp_server}:{smtp_port}")
+        
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        result = sock.connect_ex((smtp_server, smtp_port))
+        sock.close()
+        
+        if result == 0:
+            return jsonify({
+                'success': True,
+                'message': f'Network connection to {smtp_server}:{smtp_port} is OK'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': f'Network connection failed: error code {result}',
+                'solution': 'SMTP is blocked. Use Resend.com API instead.'
+            })
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/test-whatsapp', methods=['GET'])
 def test_whatsapp():
-    """Test WhatsApp configuration with GPS location"""
+    """Test WhatsApp configuration"""
     try:
         test_ip = "8.8.8.8"
         location_data = tracker.get_accurate_location(test_ip)
@@ -504,8 +613,7 @@ def test_whatsapp():
         return jsonify({
             'success': 'sent' in result,
             'status': result,
-            'location': location_data,
-            'message': 'WhatsApp test with GPS location completed'
+            'message': 'WhatsApp test completed'
         })
         
     except Exception as e:
@@ -514,194 +622,14 @@ def test_whatsapp():
             'error': str(e)
         }), 500
 
-@app.route('/test-location/<ip>', methods=['GET'])
-def test_location(ip):
-    """Test location accuracy for an IP"""
-    try:
-        location_data = tracker.get_accurate_location(ip)
-        
-        # Generate map links if coordinates available
-        map_links = {}
-        if location_data['latitude'] and location_data['longitude']:
-            lat = location_data['latitude']
-            lng = location_data['longitude']
-            map_links = {
-                'google_maps': f"https://www.google.com/maps?q={lat},{lng}",
-                'apple_maps': f"https://maps.apple.com/?q={lat},{lng}",
-                'openstreetmap': f"https://www.openstreetmap.org/?mlat={lat}&mlon={lng}"
-            }
-        
-        return jsonify({
-            'ip': ip,
-            'location': location_data,
-            'map_links': map_links,
-            'services_used': [s for s in ['ipapi', 'ipinfo', 'geoplugin'] if location_data.get(s)]
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/track-pdf/<pdf_id>/<client_name>', methods=['GET'])
-def track_pdf_access(pdf_id, client_name):
-    """Endpoint to track PDF access - Fast response with background processing"""
-    try:
-        # Get client information
-        if request.headers.get('X-Forwarded-For'):
-            ip_address = request.headers.get('X-Forwarded-For').split(',')[0]
-        else:
-            ip_address = request.remote_addr
-        
-        user_agent = request.headers.get('User-Agent', 'Unknown')
-        
-        logger.info(f"📥 Tracking request: {pdf_id} - {client_name} from {ip_address}")
-        
-        # Start background processing (includes GPS location)
-        tracker.record_access_async(pdf_id, client_name, ip_address, user_agent)
-        
-        # Return immediate response
-        pixel = base64.b64decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
-        response = Response(pixel, mimetype='image/gif')
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
-        return response
-            
-    except Exception as e:
-        logger.error(f"Tracking error: {str(e)}")
-        return "Server Error", 500
-
-@app.route('/analytics/<pdf_id>', methods=['GET'])
-def get_pdf_analytics(pdf_id):
-    """Get analytics for a specific PDF"""
-    try:
-        cursor = tracker.conn.cursor()
-        cursor.execute('''
-            SELECT client_name, access_time, country, city, region, latitude, longitude, 
-                   ip_address, user_agent, email_status, whatsapp_status
-            FROM pdf_access 
-            WHERE pdf_id = ? 
-            ORDER BY access_time DESC
-        ''', (pdf_id,))
-        
-        accesses = cursor.fetchall()
-        results = []
-        for access in accesses:
-            # Generate map links for each access with coordinates
-            map_links = {}
-            if access[5] and access[6]:  # latitude and longitude
-                map_links = {
-                    'google_maps': f"https://www.google.com/maps?q={access[5]},{access[6]}",
-                    'apple_maps': f"https://maps.apple.com/?q={access[5]},{access[6]}"
-                }
-            
-            results.append({
-                'client_name': access[0],
-                'access_time': access[1],
-                'country': access[2],
-                'city': access[3],
-                'region': access[4],
-                'latitude': access[5],
-                'longitude': access[6],
-                'ip_address': access[7],
-                'user_agent': access[8],
-                'email_status': access[9],
-                'whatsapp_status': access[10],
-                'map_links': map_links
-            })
-        
-        return jsonify({
-            'pdf_id': pdf_id,
-            'total_opens': len(accesses),
-            'accesses': results
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/create-document', methods=['POST'])
-def create_document():
-    """Create a tracked document"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'error': 'No JSON data provided'}), 400
-        
-        pdf_id = data.get('pdf_id', 'DOC_' + datetime.now().strftime("%Y%m%d_%H%M%S"))
-        client_name = data.get('client_name', 'Client')
-        content = data.get('content', 'Default document content')
-        
-        # Get base URL
-        base_url = request.host_url.rstrip('/')
-        
-        # Create HTML document with tracking
-        tracking_url = f"{base_url}/track-pdf/{pdf_id}/{client_name}"
-        
-        html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>Document: {pdf_id}</title>
-    <meta charset="UTF-8">
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background: white;
-            line-height: 1.6;
-        }}
-        .header {{
-            text-align: center;
-            border-bottom: 2px solid #333;
-            padding-bottom: 10px;
-            margin-bottom: 20px;
-        }}
-        .content {{
-            white-space: pre-line;
-        }}
-        .disclaimer {{
-            background: #f5f5f5;
-            padding: 10px;
-            margin: 20px 0;
-            border-left: 4px solid #007cba;
-            font-size: 12px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>COMPANY DOCUMENT</h1>
-        <p>Document ID: {pdf_id} | Client: {client_name}</p>
-    </div>
-    
-    <div class="disclaimer">
-        <strong>Privacy Notice:</strong> This document contains tracking to monitor delivery and engagement.
-    </div>
-    
-    <div class="content">
-        {content}
-    </div>
-    
-    <!-- Tracking pixel -->
-    <img src="{tracking_url}" width="1" height="1" style="display:none">
-</body>
-</html>"""
-        
-        return jsonify({
-            'success': True,
-            'pdf_id': pdf_id,
-            'client_name': client_name,
-            'html_content': html_content,
-            'tracking_url': tracking_url,
-            'download_filename': f"{pdf_id}_{client_name}.html"
-        })
-        
-    except Exception as e:
-        logger.error(f"Error creating document: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+# ... (keep the rest of your routes the same - track-pdf, analytics, create-document, etc.)
 
 @app.route('/config-status', methods=['GET'])
 def config_status():
     """Check configuration status"""
     email_configured = bool(os.getenv('EMAIL_FROM') and os.getenv('EMAIL_PASSWORD'))
+    resend_configured = bool(os.getenv('RESEND_API_KEY'))
+    webhook_configured = bool(os.getenv('EMAIL_WEBHOOK_URL'))
     whatsapp_configured = bool(
         os.getenv('WHATSAPP_INSTANCE_ID') and 
         os.getenv('WHATSAPP_TOKEN') and 
@@ -710,20 +638,20 @@ def config_status():
     
     return jsonify({
         'email_configured': email_configured,
+        'resend_configured': resend_configured,
+        'webhook_configured': webhook_configured,
         'whatsapp_configured': whatsapp_configured,
-        'email_from': os.getenv('EMAIL_FROM', 'Not set'),
         'smtp_server': os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
         'smtp_port': os.getenv('SMTP_PORT', '587'),
-        'features': ['GPS Location Tracking', 'Email Notifications', 'WhatsApp Alerts']
+        'recommendation': 'Use Resend.com API if SMTP is blocked'
     })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"🚀 Starting PDF Tracking System on port {port}")
-    logger.info("📍 Features: Accurate GPS Location + Multi-Platform Notifications")
     logger.info("🔧 Test endpoints:")
-    logger.info("  - /test-email - Test email with GPS location")
-    logger.info("  - /test-whatsapp - Test WhatsApp with GPS location") 
-    logger.info("  - /test-location/8.8.8.8 - Test location accuracy")
+    logger.info("  - /test-smtp - Check SMTP connectivity")
+    logger.info("  - /test-email - Test email with fallback methods")
+    logger.info("  - /test-whatsapp - Test WhatsApp")
     logger.info("  - /config-status - Check configuration")
     app.run(host='0.0.0.0', port=port, debug=False)
