@@ -159,7 +159,7 @@ class PDFTracker:
         try:
             # Get configuration from environment
             smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-            smtp_port = int(os.getenv('SMTP_PORT', '587'))
+            smtp_port = int(os.getenv('SMTP_PORT', '465'))
             email_from = os.getenv('EMAIL_FROM', '')
             email_password = os.getenv('EMAIL_PASSWORD', '')
             email_to = os.getenv('EMAIL_TO', email_from)
@@ -713,7 +713,7 @@ def config_status():
         'whatsapp_configured': whatsapp_configured,
         'email_from': os.getenv('EMAIL_FROM', 'Not set'),
         'smtp_server': os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
-        'smtp_port': os.getenv('SMTP_PORT', '587'),
+        'smtp_port': os.getenv('SMTP_PORT', '465'),
         'features': ['GPS Location Tracking', 'Email Notifications', 'WhatsApp Alerts']
     })
 
