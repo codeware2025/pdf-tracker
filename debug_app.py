@@ -54,164 +54,6 @@ class PDFTracker:
         self.conn.commit()
         logger.info("Database initialized successfully")
     
-    def get_accurate_location(self, ip_address):
-        """Get GPS location using multiple geolocation APIs with better services"""
-        location_data = {
-            'ip': ip_address,
-            'country': 'Unknown',
-            'city': 'Unknown',
-            'region': 'Unknown',
-            'latitude': None,
-            'longitude': None,
-            'accuracy': 50000,  # Very low accuracy for IP-based
-            'gps_source': 'ip_geolocation',
-            'service': 'none'
-        }
-        
-        # Skip local IPs
-        if ip_address in ['127.0.0.1', 'localhost'] or ip_address.startswith(('192.168.', '10.', '172.', '0.')):
-            location_data.update({
-                'country': 'Local Network',
-                'city': 'Internal',
-                'accuracy': 100000
-            })
-            return location_data
-        
-        # Try multiple better geolocation services
-        services = [
-            self._try_ipapi(ip_address),
-            self._try_ip2location(ip_address),
-            self._try_abstractapi(ip_address),
-            self._try_ipgeolocation(ip_address),
-            self._try_ipinfo(ip_address)
-        ]
-        
-        # Use the best available result
-        best_result = None
-        for result in services:
-            if result and result.get('latitude') and result.get('longitude'):
-                if not best_result or (result.get('accuracy', 1000) < best_result.get('accuracy', 1000)):
-                    best_result = result
-        
-        if best_result:
-            location_data.update(best_result)
-            logger.info(f"📍 Better location found for {ip_address}: {location_data['city']}, {location_data['country']}")
-        else:
-            logger.warning(f"🌐 No accurate location found for {ip_address}, using fallback")
-        
-        return location_data
-    
-    def _try_ipapi(self, ip_address):
-        """Try ipapi.co with better error handling"""
-        try:
-            response = requests.get(f'https://ipapi.co/{ip_address}/json/', timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('error'):
-                    return None
-                return {
-                    'country': data.get('country_name', 'Unknown'),
-                    'city': data.get('city', 'Unknown'),
-                    'region': data.get('region', 'Unknown'),
-                    'latitude': float(data.get('latitude', 0)) or None,
-                    'longitude': float(data.get('longitude', 0)) or None,
-                    'accuracy': 5000,  # Medium accuracy for IP
-                    'service': 'ipapi'
-                }
-        except Exception as e:
-            logger.debug(f"ipapi.co failed: {e}")
-        return None
-    
-    def _try_ip2location(self, ip_address):
-        """Try ip2location.io (more accurate)"""
-        try:
-            # You can get a free API key from ip2location.io
-            api_key = os.getenv('IP2LOCATION_API_KEY', '')
-            if api_key:
-                response = requests.get(f'https://api.ip2location.io/?key={api_key}&ip={ip_address}', timeout=5)
-            else:
-                response = requests.get(f'https://api.ip2location.io/?ip={ip_address}', timeout=5)
-                
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    'country': data.get('country_name', 'Unknown'),
-                    'city': data.get('city_name', 'Unknown'),
-                    'region': data.get('region_name', 'Unknown'),
-                    'latitude': float(data.get('latitude', 0)) or None,
-                    'longitude': float(data.get('longitude', 0)) or None,
-                    'accuracy': 3000,
-                    'service': 'ip2location'
-                }
-        except Exception as e:
-            logger.debug(f"ip2location failed: {e}")
-        return None
-    
-    def _try_abstractapi(self, ip_address):
-        """Try abstractapi.com (very accurate)"""
-        try:
-            api_key = os.getenv('ABSTRACT_API_KEY', '')
-            if api_key:
-                response = requests.get(f'https://ipgeolocation.abstractapi.com/v1/?api_key={api_key}&ip_address={ip_address}', timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    return {
-                        'country': data.get('country', 'Unknown'),
-                        'city': data.get('city', 'Unknown'),
-                        'region': data.get('region', 'Unknown'),
-                        'latitude': float(data.get('latitude', 0)) or None,
-                        'longitude': float(data.get('longitude', 0)) or None,
-                        'accuracy': 2000,
-                        'service': 'abstractapi'
-                    }
-        except Exception as e:
-            logger.debug(f"abstractapi failed: {e}")
-        return None
-    
-    def _try_ipgeolocation(self, ip_address):
-        """Try ipgeolocation.io"""
-        try:
-            api_key = os.getenv('IPGEOLOCATION_API_KEY', '')
-            if api_key:
-                response = requests.get(f'https://api.ipgeolocation.io/ipgeo?apiKey={api_key}&ip={ip_address}', timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    return {
-                        'country': data.get('country_name', 'Unknown'),
-                        'city': data.get('city', 'Unknown'),
-                        'region': data.get('state_prov', 'Unknown'),
-                        'latitude': float(data.get('latitude', 0)) or None,
-                        'longitude': float(data.get('longitude', 0)) or None,
-                        'accuracy': 4000,
-                        'service': 'ipgeolocation'
-                    }
-        except Exception as e:
-            logger.debug(f"ipgeolocation failed: {e}")
-        return None
-    
-    def _try_ipinfo(self, ip_address):
-        """Try ipinfo.io as fallback"""
-        try:
-            response = requests.get(f'https://ipinfo.io/{ip_address}/json', timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                loc = data.get('loc', '').split(',')
-                latitude = float(loc[0]) if loc and loc[0] else None
-                longitude = float(loc[1]) if len(loc) > 1 and loc[1] else None
-                
-                return {
-                    'country': data.get('country', 'Unknown'),
-                    'city': data.get('city', 'Unknown'),
-                    'region': data.get('region', 'Unknown'),
-                    'latitude': latitude,
-                    'longitude': longitude,
-                    'accuracy': 10000,
-                    'service': 'ipinfo'
-                }
-        except Exception as e:
-            logger.debug(f"ipinfo.io failed: {e}")
-        return None
-
     def send_email_notification(self, pdf_id, client_name, access_data, location_data):
         """Send email notification with location details"""
         try:
@@ -310,7 +152,7 @@ class PDFTracker:
             return f"error: {str(e)}"
     
     def send_whatsapp_notification(self, pdf_id, client_name, access_data, location_data):
-        """Send WhatsApp notification with improved location accuracy"""
+        """Send WhatsApp notification with location details"""
         try:
             instance_id = os.getenv('WHATSAPP_INSTANCE_ID', '')
             token = os.getenv('WHATSAPP_TOKEN', '')
@@ -412,8 +254,6 @@ Document tracking completed! 🎯"""
             try:
                 logger.info(f"🎯 Processing notifications for {pdf_id}")
                 
-                # Get IP-based location as fallback
-                ip_location_data = self.get_accurate_location(ip_address)
                 access_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 access_data = {
@@ -422,12 +262,12 @@ Document tracking completed! 🎯"""
                     'user_agent': user_agent
                 }
                 
-                # Use GPS data if available, otherwise use IP location
+                # Use GPS data if available, otherwise use IP location (with fallback)
                 if gps_data and gps_data.get('latitude') and gps_data.get('longitude'):
                     location_data = {
-                        'country': gps_data.get('country', ip_location_data['country']),
-                        'city': gps_data.get('city', ip_location_data['city']),
-                        'region': gps_data.get('region', ip_location_data['region']),
+                        'country': gps_data.get('country', 'Unknown'),
+                        'city': gps_data.get('city', 'Unknown'),
+                        'region': gps_data.get('region', 'Unknown'),
                         'latitude': gps_data['latitude'],
                         'longitude': gps_data['longitude'],
                         'accuracy': gps_data.get('accuracy', 50),
@@ -435,10 +275,20 @@ Document tracking completed! 🎯"""
                         'service': 'browser_geolocation'
                     }
                     logger.info(f"🎯 Using real-time GPS coordinates for {pdf_id}")
+                    logger.info(f"📍 GPS Location: {location_data['latitude']:.6f}, {location_data['longitude']:.6f}")
                 else:
-                    location_data = ip_location_data
-                    logger.info(f"🌐 Using IP-based location for {pdf_id}")
-                    logger.info(f"📍 IP Location: {location_data['city']}, {location_data['country']}")
+                    # Use a default location that indicates GPS wasn't available
+                    location_data = {
+                        'country': 'GPS Not Available',
+                        'city': 'Location Access Denied',
+                        'region': 'Use IP Geolocation',
+                        'latitude': None,
+                        'longitude': None,
+                        'accuracy': 50000,
+                        'gps_source': 'gps_denied',
+                        'service': 'none'
+                    }
+                    logger.warning(f"❌ GPS location not available for {pdf_id}, using fallback")
                 
                 # Save to database
                 cursor = self.conn.cursor()
@@ -476,9 +326,7 @@ Document tracking completed! 🎯"""
                 logger.info(f"✅ Notifications completed for {pdf_id}")
                 logger.info(f"   📧 Email: {email_status}")
                 logger.info(f"   💬 WhatsApp: {whatsapp_status}")
-                logger.info(f"   📍 Location: {location_data['city']}, {location_data['country']}")
-                logger.info(f"   🎯 GPS Source: {location_data['gps_source']}")
-                logger.info(f"   📏 Accuracy: {location_data['accuracy']:.0f}m")
+                logger.info(f"   📍 GPS Source: {location_data['gps_source']}")
                 
             except Exception as e:
                 logger.error(f"❌ Error in notification processing: {str(e)}")
@@ -515,18 +363,26 @@ def track_pdf_access(pdf_id, client_name):
             try:
                 gps_data = request.get_json()
                 if gps_data and 'latitude' in gps_data and 'longitude' in gps_data:
-                    logger.info(f"🎯 Received GPS data from HTML file for {pdf_id}: {gps_data['latitude']:.6f}, {gps_data['longitude']:.6f}")
+                    logger.info(f"🎯 Received GPS data from HTML file for {pdf_id}")
+                    logger.info(f"📍 GPS Coordinates: {gps_data['latitude']:.6f}, {gps_data['longitude']:.6f}")
+                    logger.info(f"📏 GPS Accuracy: {gps_data.get('accuracy', 'Unknown')}m")
+                else:
+                    logger.warning(f"❌ Incomplete GPS data received for {pdf_id}")
             except Exception as e:
                 logger.warning(f"Could not parse GPS data: {e}")
+        else:
+            logger.info(f"📥 GET request received for {pdf_id} (IP-based tracking only)")
         
         logger.info(f"📥 Tracking request: {pdf_id} - {client_name} from IP: {ip_address}")
         
         # Start background processing (includes GPS location if available)
         tracker.record_access_async(pdf_id, client_name, ip_address, user_agent, gps_data)
         
-        # Return immediate response
+        # Return immediate response with CORS headers for GPS requests
         if request.method == 'POST':
-            return jsonify({'success': True, 'message': 'Location data received successfully'})
+            response = jsonify({'success': True, 'message': 'GPS location data received successfully'})
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response
         else:
             pixel = base64.b64decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
             response = Response(pixel, mimetype='image/gif')
@@ -538,8 +394,6 @@ def track_pdf_access(pdf_id, client_name):
     except Exception as e:
         logger.error(f"Tracking error: {str(e)}")
         return "Server Error", 500
-
-# ... (keep create-document, test-email, test-whatsapp, analytics, config-status routes the same)
 
 @app.route('/create-document', methods=['POST'])
 def create_document():
@@ -610,6 +464,11 @@ def create_document():
             border-color: #ffeaa7;
             color: #856404;
         }}
+        .error {{
+            background: #f8d7da;
+            border-color: #f5c6cb;
+            color: #721c24;
+        }}
         .hidden {{
             display: none;
         }}
@@ -629,6 +488,14 @@ def create_document():
             background: #6c757d;
             cursor: not-allowed;
         }}
+        .location-details {{
+            background: #e9ecef;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 12px;
+        }}
     </style>
 </head>
 <body>
@@ -638,87 +505,113 @@ def create_document():
     </div>
     
     <div class="tracking-notice">
-        <strong>📍 Location Tracking Active</strong><br>
-        This document includes location tracking for delivery verification. 
-        For accurate location, please allow location access when prompted.
+        <strong>📍 PRECISE LOCATION TRACKING ACTIVE</strong><br>
+        This document will request your <strong>exact GPS location</strong> for delivery verification. 
+        Please <strong>allow location access</strong> when prompted by your browser for accurate tracking.
     </div>
     
     <div id="locationStatus" class="location-status hidden">
-        <strong>Location Status:</strong> <span id="statusText">Initializing...</span>
+        <strong>Real-time Location Tracking:</strong> <span id="statusText">Initializing GPS...</span>
+        <div id="locationDetails" class="location-details hidden"></div>
     </div>
     
     <div class="content">
         {content}
     </div>
     
-    <!-- Hidden tracking image for initial IP-based tracking -->
+    <!-- Hidden tracking image for basic tracking -->
     <img src="{tracking_url}" width="1" height="1" style="display:none" id="trackingPixel">
     
     <script>
         // Global variables
         let locationAcquired = false;
+        let gpsCoordinates = null;
         const trackingUrl = '{tracking_url}';
         
         // Improved function to get precise GPS coordinates
         function getPreciseLocation() {{
-            showStatus('Requesting precise location access...', 'warning');
+            showStatus('🔍 Requesting precise GPS location access...', 'warning');
             
             if (!navigator.geolocation) {{
-                showStatus('Geolocation not supported by this browser', 'warning');
+                showStatus('❌ Geolocation not supported by this browser', 'error');
                 return;
             }}
             
+            console.log("Starting high-accuracy GPS location request...");
+            
             // Get high-accuracy location with better options
             navigator.geolocation.getCurrentPosition(
+                // Success callback
                 function(position) {{
                     const lat = position.coords.latitude;
                     const lng = position.coords.longitude;
                     const accuracy = position.coords.accuracy;
                     
-                    console.log("📍 Acquired High-Accuracy GPS:", lat, lng, "Accuracy:", accuracy + "m");
-                    
-                    showStatus(`🎯 Acquired precise location (Accuracy: ${{accuracy}}m) - Sending...`, 'warning');
-                    
-                    // Send precise GPS coordinates to server
-                    sendLocationData({{
+                    gpsCoordinates = {{
                         latitude: lat,
                         longitude: lng,
                         accuracy: accuracy,
                         timestamp: new Date().toISOString(),
                         source: 'browser_geolocation'
-                    }});
+                    }};
+                    
+                    console.log("🎯 SUCCESS: Acquired High-Accuracy GPS:", lat, lng, "Accuracy:", accuracy + "m");
+                    
+                    // Show location details to user
+                    showLocationDetails(lat, lng, accuracy);
+                    showStatus(`✅ Acquired precise GPS location (Accuracy: ${{accuracy}}m)`, 'success');
+                    
+                    // Send precise GPS coordinates to server
+                    sendLocationData(gpsCoordinates);
                     
                 }},
+                // Error callback
                 function(error) {{
                     let errorMessage = "Location access unavailable";
                     switch(error.code) {{
                         case error.PERMISSION_DENIED:
-                            errorMessage = "❌ Location access denied - using approximate IP location only";
+                            errorMessage = "❌ LOCATION ACCESS DENIED - You must allow location access for accurate tracking";
                             break;
                         case error.POSITION_UNAVAILABLE:
-                            errorMessage = "❌ Location information unavailable";
+                            errorMessage = "❌ GPS location unavailable - Please check your device location services";
                             break;
                         case error.TIMEOUT:
-                            errorMessage = "❌ Location request timed out";
+                            errorMessage = "❌ GPS location request timed out - Please try again";
                             break;
                     }}
                     
-                    showStatus(errorMessage, 'warning');
-                    console.log("Geolocation error:", errorMessage);
+                    showStatus(errorMessage, 'error');
+                    console.error("Geolocation error:", errorMessage, error);
                     
-                    // Mark as acquired even if GPS fails (we still have IP)
+                    // Mark as acquired even if GPS fails
                     locationAcquired = true;
                 }},
+                // Options - maximum accuracy
                 {{
-                    enableHighAccuracy: true,
-                    timeout: 20000,  // 20 seconds timeout
-                    maximumAge: 0    // No cached position
+                    enableHighAccuracy: true,    // Force GPS usage
+                    timeout: 30000,             // 30 seconds timeout
+                    maximumAge: 0               // No cached position - always get fresh location
                 }}
             );
         }}
         
+        // Function to show location details
+        function showLocationDetails(lat, lng, accuracy) {{
+            const detailsElement = document.getElementById('locationDetails');
+            detailsElement.innerHTML = `
+                <strong>GPS Coordinates:</strong><br>
+                Latitude: ${"${lat.toFixed(6)}"}<br>
+                Longitude: ${"${lng.toFixed(6)}"}<br>
+                Accuracy: ${"${accuracy}"} meters<br>
+                <a href="https://maps.google.com/?q=${"${lat}"},${"${lng}"}" target="_blank">View on Google Maps</a>
+            `;
+            detailsElement.classList.remove('hidden');
+        }}
+        
         // Function to send location data to server
         function sendLocationData(locationData) {{
+            console.log("Sending GPS data to server:", locationData);
+            
             fetch(trackingUrl, {{
                 method: 'POST',
                 headers: {{
@@ -726,14 +619,19 @@ def create_document():
                 }},
                 body: JSON.stringify(locationData)
             }})
-            .then(response => response.json())
+            .then(response => {{
+                if (!response.ok) {{
+                    throw new Error('Network response was not ok');
+                }}
+                return response.json();
+            }})
             .then(data => {{
                 showStatus('✅ Precise location sent successfully! Tracking complete.', 'success');
                 locationAcquired = true;
                 console.log("High-accuracy location data sent successfully:", data);
             }})
             .catch(error => {{
-                showStatus('⚠️ Location sent with limited accuracy', 'warning');
+                showStatus('⚠️ Failed to send precise location - using basic tracking', 'warning');
                 console.error("Error sending location data:", error);
                 locationAcquired = true;
             }});
@@ -752,44 +650,58 @@ def create_document():
         // Function to manually trigger location access
         function requestLocationManually() {{
             if (!locationAcquired) {{
+                showStatus('🔄 Manually requesting GPS location...', 'warning');
                 getPreciseLocation();
             }} else {{
-                showStatus('Location already acquired', 'success');
+                showStatus('📍 Location already acquired', 'success');
             }}
         }}
         
-        // Initialize tracking when page loads
-        window.addEventListener('load', function() {{
-            console.log('Document loaded, starting enhanced tracking process...');
+        // Function to initialize tracking
+        function initializeTracking() {{
+            console.log('Document loaded, starting enhanced GPS tracking...');
             
             // Show initial status
-            showStatus('Document loaded - starting enhanced location tracking...', 'warning');
+            showStatus('🚀 Starting real-time GPS location tracking...', 'warning');
             
-            // First, the tracking pixel will load (IP-based tracking)
-            // Then attempt to get precise GPS location with delay
-            setTimeout(() => {{
-                console.log('Attempting to get high-accuracy GPS location...');
-                getPreciseLocation();
-            }}, 1500);
+            // First, trigger basic tracking (IP-based)
+            document.getElementById('trackingPixel').onload = function() {{
+                console.log('Basic tracking completed, starting GPS...');
+                
+                // Wait a moment then start GPS
+                setTimeout(() => {{
+                    console.log('Starting high-accuracy GPS location request...');
+                    getPreciseLocation();
+                }}, 1000);
+            }};
             
-            // Final fallback
-            setTimeout(() => {{
-                if (!locationAcquired) {{
-                    showStatus('Tracking completed with available location data', 'success');
-                    locationAcquired = true;
-                }}
-            }}, 25000);
-        }});
-        
-        // Add manual location request button for user control
-        document.addEventListener('DOMContentLoaded', function() {{
-            const manualButton = document.createElement('button');
-            manualButton.textContent = '📡 Get Precise Location';
-            manualButton.onclick = requestLocationManually;
-            manualButton.style.marginTop = '10px';
+            // Set up manual retry button
+            const retryButton = document.createElement('button');
+            retryButton.textContent = '🔄 Retry GPS Location';
+            retryButton.onclick = requestLocationManually;
+            retryButton.style.marginTop = '10px';
             
             const statusDiv = document.getElementById('locationStatus');
-            statusDiv.parentNode.insertBefore(manualButton, statusDiv.nextSibling);
+            statusDiv.parentNode.insertBefore(retryButton, statusDiv.nextSibling);
+            
+            // Final fallback - if no GPS after 35 seconds
+            setTimeout(() => {{
+                if (!locationAcquired) {{
+                    showStatus('⏰ GPS timeout - using basic location tracking', 'warning');
+                    locationAcquired = true;
+                }}
+            }}, 35000);
+        }}
+        
+        // Start tracking when page loads
+        window.addEventListener('load', initializeTracking);
+        
+        // Also try to get location if user interacts with the page
+        document.addEventListener('click', function() {{
+            if (!locationAcquired) {{
+                console.log('User interaction detected, retrying GPS...');
+                getPreciseLocation();
+            }}
         }});
     </script>
 </body>
@@ -802,7 +714,12 @@ def create_document():
             'html_content': html_content,
             'tracking_url': tracking_url,
             'download_filename': f"{pdf_id}_{client_name}.html",
-            'instructions': 'Send this HTML file to clients. When they open it, you will receive their precise location via email and WhatsApp.'
+            'instructions': [
+                '1. Send this HTML file to clients',
+                '2. When they open it, they MUST allow location access',
+                '3. You will receive their EXACT GPS coordinates via email/WhatsApp',
+                '4. If location is denied, you will see "GPS Not Available"'
+            ]
         })
         
     except Exception as e:
@@ -811,12 +728,29 @@ def create_document():
 
 # ... (keep other routes the same)
 
+@app.route('/test-gps', methods=['GET'])
+def test_gps():
+    """Test endpoint to verify GPS functionality"""
+    return jsonify({
+        'status': 'GPS Tracking Active',
+        'instructions': [
+            '1. Create a document using /create-document',
+            '2. Open the HTML file in a browser',
+            '3. ALLOW location access when prompted',
+            '4. Check logs for GPS coordinates',
+            '5. You should receive notifications with exact location'
+        ],
+        'requirements': [
+            'HTTPS or Local File',
+            'Location Permission Allowed',
+            'GPS/GPS-enabled Device'
+        ]
+    })
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"🚀 Starting PDF Tracking System on port {port}")
-    logger.info("🎯 Features: Improved Location Accuracy + Better GPS Tracking")
-    logger.info("🔧 For better accuracy, consider adding API keys for:")
-    logger.info("   - IP2Location: https://www.ip2location.io/")
-    logger.info("   - AbstractAPI: https://www.abstractapi.com/")
-    logger.info("   - IPGeolocation: https://ipgeolocation.io/")
+    logger.info("🎯 IMPORTANT: For accurate GPS location, clients MUST allow location access")
+    logger.info("📍 Test GPS: https://your-app.onrender.com/test-gps")
+    logger.info("🔧 Create documents using /create-document endpoint")
     app.run(host='0.0.0.0', port=port, debug=False)
