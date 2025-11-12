@@ -600,9 +600,9 @@ def create_document():
             const detailsElement = document.getElementById('locationDetails');
             detailsElement.innerHTML = `
                 <strong>GPS Coordinates:</strong><br>
-                Latitude: ${"${lat.toFixed(6)}"}<br>
-                Longitude: ${"${lng.toFixed(6)}"}<br>
-                Accuracy: ${"${accuracy}"} meters<br>
+                Latitude: {"${lat.toFixed(6)}"}<br>
+                Longitude: {"${lng.toFixed(6)}"}<br>
+                Accuracy: {"${accuracy}"} meters<br>
                 <a href="https://maps.google.com/?q=${"${lat}"},${"${lng}"}" target="_blank">View on Google Maps</a>
             `;
             detailsElement.classList.remove('hidden');
