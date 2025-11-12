@@ -603,7 +603,7 @@ def create_document():
                 Latitude: {"${lat.toFixed(6)}"}<br>
                 Longitude: {"${lng.toFixed(6)}"}<br>
                 Accuracy: {"${accuracy}"} meters<br>
-                <a href="https://maps.google.com/?q=${"${lat}"},${"${lng}"}" target="_blank">View on Google Maps</a>
+                <a href="https://maps.google.com/?q={"${lat}"},{"${lng}"}" target="_blank">View on Google Maps</a>
             `;
             detailsElement.classList.remove('hidden');
         }}
