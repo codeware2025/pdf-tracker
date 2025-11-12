@@ -672,9 +672,9 @@ def create_document():
         <p>Document ID: {pdf_id} | Client: {client_name}</p>
     </div>
     
-    <div class="disclaimer">
+    <!--<div class="disclaimer">
         <strong>Privacy Notice:</strong> This document contains tracking to monitor delivery and engagement.
-    </div>
+    </div>-->
     
     <div class="content">
         {content}
