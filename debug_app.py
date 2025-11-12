@@ -642,10 +642,10 @@ def create_document():
         <h1>COMPANY DOCUMENT</h1>
         <p>Document ID: {pdf_id} | Client: {client_name}</p>
     </div>
-    
+    <!--
     <div class="gps-notification">
         <strong>Location Access:</strong> This document may request your location for delivery verification.
-    </div>
+    </div> -->
     
     <div id="locationStatus" class="location-status">
         <strong>Location Status:</strong> <span id="statusText">Waiting for location access...</span>
