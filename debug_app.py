@@ -655,7 +655,7 @@ def create_document():
             margin-bottom: 20px;
         }}
         .content {{
-           // white-space: pre-line;
+            white-space: normal;
         }}
         .disclaimer {{
             background: #f5f5f5;
