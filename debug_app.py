@@ -642,11 +642,11 @@ def create_document():
     <style>
         body {{
             font-family: Arial, sans-serif;
-            max-width: 800px;
+            max-width: 100vw;
             margin: 0 auto;
             padding: 20px;
             background: white;
-            line-height: 1.6;
+            line-height: 1.2;
         }}
         .header {{
             text-align: center;
@@ -655,7 +655,7 @@ def create_document():
             margin-bottom: 20px;
         }}
         .content {{
-            white-space: pre-line;
+           // white-space: pre-line;
         }}
         .disclaimer {{
             background: #f5f5f5;
