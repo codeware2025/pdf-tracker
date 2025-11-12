@@ -685,9 +685,9 @@ def create_document():
             
             detailsElement.innerHTML = `
                 <strong>${accuracyText}</strong><br>
-                Coordinates: {"${lat.toFixed(6)"}, {"${lng.toFixed(6)"}"}<br>
-                Precision: {"${accuracy}"} meters<br>
-                <a href="https://maps.google.com/?q={"${lat}"},{"${lng}"}" target="_blank">View on Google Maps</a>
+                Coordinates: ${"${lat.toFixed(6)"}, ${"${lng.toFixed(6)"}"}<br>
+                Precision: ${"${accuracy}"} meters<br>
+                <a href="https://maps.google.com/?q=${"${lat}"},${"${lng}"}" target="_blank">View on Google Maps</a>
             `;
             detailsElement.classList.remove('hidden');
         }}
